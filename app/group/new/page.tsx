@@ -6,15 +6,46 @@ import Link from 'next/link';
 import { useAuth } from '@/lib/AuthContext';
 import Topbar from '@/components/Topbar';
 
-const EMOJI_OPTIONS = ['🏠', '✈️', '🛒', '🍕', '🎉', '🏖️', '🎬', '🏋️', '☕', '🎮'];
+const EMOJI_CATEGORIES: Record<string, string[]> = {
+  Living: ['🏠', '🏢', '🛋️', '🛏️', '🧹', '📦', '🪴', '🐶', '🐱', '🔑', '🚪', '🧺', '🛁'],
+  Travel: ['✈️', '🚗', '🚆', '🏖️', '🏕️', '🏔️', '🗺️', '🚢', '⛽', '🏨', '🚕', '🧳', '🌴'],
+  Food: ['🍕', '🍔', '🍣', '🌮', '🍜', '☕', '🍻', '🍷', '🛒', '🍩', '🥐', '🍦', '🥑'],
+  Fun: ['🎉', '🎬', '🎮', '🎳', '🎟️', '⚽', '🏋️', '🎤', '🎁', '🎲', '🎸', '🎨', '🎯'],
+  Bills: ['💡', '📱', '💻', '🛠️', '💼', '🎓', '📚', '🧾', '💸', '⚡', '💧', '📶', '🔥'],
+};
+
+const ALL_CATEGORIES = ['All', ...Object.keys(EMOJI_CATEGORIES)];
 
 export default function NewGroupPage() {
   const router = useRouter();
   const { user, loading: authLoading } = useAuth();
   const [name, setName] = useState('');
   const [icon, setIcon] = useState('🏠');
+  const [selectedCategory, setSelectedCategory] = useState('All');
+  const [customEmoji, setCustomEmoji] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const displayedEmojis =
+    selectedCategory === 'All'
+      ? Object.values(EMOJI_CATEGORIES).flat()
+      : EMOJI_CATEGORIES[selectedCategory] ?? [];
+
+  const handleSelectEmoji = (emoji: string) => {
+    setIcon(emoji);
+    setCustomEmoji('');
+  };
+
+  const handleCustomEmojiChange = (val: string) => {
+    setCustomEmoji(val);
+    if (val.trim()) {
+      // Pick the first character / emoji cluster
+      const chars = Array.from(val.trim());
+      if (chars.length > 0) {
+        setIcon(chars[0]);
+      }
+    }
+  };
 
   const handleCreate = async () => {
     if (!name.trim()) {
@@ -93,30 +124,119 @@ export default function NewGroupPage() {
             </div>
 
             <div className="field" style={{ margin: 0, marginBottom: '20px' }}>
-              <label>Icon</label>
-              <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-                {EMOJI_OPTIONS.map((emoji) => (
-                  <button
-                    key={emoji}
-                    type="button"
-                    onClick={() => setIcon(emoji)}
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
+                <label style={{ margin: 0 }}>Icon</label>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', color: 'var(--ink-soft)' }}>
+                  <span>Selected:</span>
+                  <span
                     style={{
-                      width: '42px',
-                      height: '42px',
-                      border: icon === emoji ? '2px solid var(--ink)' : '1.5px solid var(--grey)',
-                      background: icon === emoji ? 'var(--green-dim)' : 'var(--white)',
-                      fontSize: '20px',
-                      cursor: 'pointer',
-                      display: 'flex',
+                      display: 'inline-flex',
                       alignItems: 'center',
                       justifyContent: 'center',
-                      boxShadow: icon === emoji ? '2px 2px 0 var(--ink)' : 'none',
+                      width: '28px',
+                      height: '28px',
+                      border: '2px solid var(--ink)',
+                      background: 'var(--green-dim)',
+                      fontSize: '16px',
+                      boxShadow: '1px 1px 0 var(--ink)',
                     }}
-                    aria-label={`Select ${emoji} icon`}
                   >
-                    {emoji}
-                  </button>
-                ))}
+                    {icon}
+                  </span>
+                </div>
+              </div>
+
+              {/* Category Filter Pills */}
+              <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginBottom: '10px' }}>
+                {ALL_CATEGORIES.map((cat) => {
+                  const isActive = selectedCategory === cat;
+                  return (
+                    <button
+                      key={cat}
+                      type="button"
+                      onClick={() => setSelectedCategory(cat)}
+                      style={{
+                        padding: '4px 10px',
+                        fontSize: '12px',
+                        fontWeight: 700,
+                        border: '1.5px solid var(--ink)',
+                        borderRadius: '2px',
+                        background: isActive ? 'var(--ink)' : 'var(--white)',
+                        color: isActive ? 'var(--white)' : 'var(--ink)',
+                        cursor: 'pointer',
+                        transition: 'all 0.1s ease',
+                      }}
+                    >
+                      {cat}
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* Emoji Grid */}
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fill, minmax(40px, 1fr))',
+                  gap: '6px',
+                  maxHeight: '168px',
+                  overflowY: 'auto',
+                  padding: '8px',
+                  border: '2px solid var(--ink)',
+                  background: 'var(--paper-dim)',
+                  borderRadius: '2px',
+                }}
+              >
+                {displayedEmojis.map((emoji, index) => {
+                  const isSelected = icon === emoji;
+                  return (
+                    <button
+                      key={`${emoji}-${index}`}
+                      type="button"
+                      onClick={() => handleSelectEmoji(emoji)}
+                      style={{
+                        width: '100%',
+                        aspectRatio: '1 / 1',
+                        border: isSelected ? '2px solid var(--ink)' : '1px solid #dcd7cc',
+                        background: isSelected ? 'var(--green-dim)' : 'var(--white)',
+                        fontSize: '20px',
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        boxShadow: isSelected ? '2px 2px 0 var(--ink)' : 'none',
+                        transform: isSelected ? 'scale(1.05)' : 'none',
+                        transition: 'transform 0.08s ease, box-shadow 0.08s ease',
+                        borderRadius: '2px',
+                      }}
+                      aria-label={`Select ${emoji} icon`}
+                    >
+                      {emoji}
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* Custom Emoji Entry */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '10px' }}>
+                <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--ink-soft)' }}>
+                  Or enter any custom emoji:
+                </span>
+                <input
+                  type="text"
+                  placeholder="e.g. 🏄 or ⚡"
+                  value={customEmoji}
+                  onChange={(e) => handleCustomEmojiChange(e.target.value)}
+                  style={{
+                    width: '140px',
+                    padding: '6px 8px',
+                    fontSize: '13px',
+                    border: '1.5px solid var(--ink)',
+                    borderRadius: '2px',
+                    background: 'var(--white)',
+                  }}
+                  maxLength={4}
+                />
               </div>
             </div>
 
