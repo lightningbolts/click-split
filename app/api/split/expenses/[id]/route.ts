@@ -3,6 +3,8 @@ import type { NextRequest } from 'next/server';
 import { createSupabaseServerClient } from '@/lib/supabase/server';
 import { computeExpenseShares } from '@/lib/shareCalculation';
 
+export const dynamic = 'force-dynamic';
+
 interface ExpenseItem {
   id?: string;
   label: string;

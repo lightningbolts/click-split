@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
-import { createSupabaseServerClient } from '@/lib/supabase/server';
+import { createSupabaseServerClient, createSupabaseServiceRoleClient } from '@/lib/supabase/server';
+
+export const dynamic = 'force-dynamic';
 
 /**
  * GET /api/split/groups
@@ -46,12 +48,16 @@ export async function GET() {
     .select('group_id, user_id')
     .in('group_id', groupIds);
 
-  // Get user names
+  // Read shared Click identities through the service role so public profile RLS
+  // cannot degrade group member names on the dashboard.
   const memberUserIds = [...new Set((allMembers ?? []).map((m: { user_id: string }) => m.user_id))];
-  const { data: users } = await supabase
-    .from('users')
-    .select('id, name, full_name, email')
-    .in('id', memberUserIds);
+  const serviceRole = createSupabaseServiceRoleClient();
+  const { data: users } = memberUserIds.length > 0
+    ? await serviceRole
+        .from('users')
+        .select('id, name, full_name, email')
+        .in('id', memberUserIds)
+    : { data: [] };
 
   const userNameMap = new Map(
     (users ?? []).map((u: { id: string; name: string | null; full_name?: string | null; email?: string | null }) => [

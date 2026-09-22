@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useAuth } from '@/lib/AuthContext';
 import Topbar from '@/components/Topbar';
 import BalanceHero from '@/components/BalanceHero';
@@ -8,6 +8,7 @@ import GroupCard from '@/components/GroupCard';
 import FAB from '@/components/FAB';
 import JoinGroupModal from '@/components/JoinGroupModal';
 import Link from 'next/link';
+import { getSupabaseClient } from '@/lib/supabase/client';
 
 interface GroupData {
   id: string;
@@ -33,6 +34,20 @@ export default function DashboardPage() {
   const [isJoinModalOpen, setIsJoinModalOpen] = useState(false);
   const [isExpensePickerOpen, setIsExpensePickerOpen] = useState(false);
 
+  const fetchGroups = useCallback(async () => {
+    try {
+      const res = await fetch('/api/split/groups', { cache: 'no-store' });
+      if (res.ok) {
+        const data = await res.json();
+        setGroups(data.groups ?? []);
+      }
+    } catch (err) {
+      console.error('Failed to fetch groups:', err);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     if (authLoading) return;
     if (!user) {
@@ -40,22 +55,38 @@ export default function DashboardPage() {
       return;
     }
 
-    const fetchGroups = async () => {
-      try {
-        const res = await fetch('/api/split/groups');
-        if (res.ok) {
-          const data = await res.json();
-          setGroups(data.groups ?? []);
-        }
-      } catch (err) {
-        console.error('Failed to fetch groups:', err);
-      } finally {
-        setLoading(false);
-      }
-    };
-
     void fetchGroups();
-  }, [user, authLoading]);
+  }, [user, authLoading, fetchGroups]);
+
+  useEffect(() => {
+    if (!user) return;
+
+    const supabase = getSupabaseClient();
+    if (!supabase) return;
+
+    const refresh = () => { void fetchGroups(); };
+    const channel = supabase
+      .channel(`split-dashboard-${user.id}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'split_expenses' }, refresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'split_expense_items' }, refresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'split_expense_shares' }, refresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'split_settlements' }, refresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'split_group_members' }, refresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'split_groups' }, refresh)
+      .subscribe();
+
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') refresh();
+    };
+    window.addEventListener('focus', refresh);
+    document.addEventListener('visibilitychange', handleVisibility);
+
+    return () => {
+      window.removeEventListener('focus', refresh);
+      document.removeEventListener('visibilitychange', handleVisibility);
+      void supabase.removeChannel(channel);
+    };
+  }, [user, fetchGroups]);
 
   if (authLoading || loading) {
     return (
