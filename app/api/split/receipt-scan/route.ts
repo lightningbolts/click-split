@@ -5,7 +5,7 @@ import { createSupabaseServerClient } from '@/lib/supabase/server';
 const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions';
 
 const EXTRACTION_SYSTEM_PROMPT = `You are a professional receipt OCR and parsing assistant.
-Given an image of a receipt, extract:
+Given one or more ordered images of the same receipt, extract:
 1. "merchant": The store, restaurant, or business name (e.g. "Safeway", "Trader Joe's", "Target", "Starbucks").
 2. "date": Date of purchase in YYYY-MM-DD format if visible, or null.
 3. "items": All purchased line items. For each item:
@@ -28,6 +28,10 @@ Return ONLY a valid JSON object matching this structure:
 }
 
 Rules:
+- The images are ordered from the top of the receipt to the bottom.
+- Adjacent images may overlap. Do not double-count a line item merely because the same printed line appears in overlapping photos.
+- Preserve legitimate repeated purchases when they are separate printed occurrences on the receipt.
+- Prefer merchant/date metadata from the clearest page and tax/tip/final total from the bottom-most page where those fields appear.
 - Include every distinct purchased line item.
 - Do not include subtotal, total, tax, tip, or payment lines as items.
 - Prices must be positive decimal numbers.
@@ -57,6 +61,10 @@ Return ONLY a valid JSON object matching this structure:
 }
 
 Rules:
+- The OCR text may contain multiple page sections for one long receipt, in top-to-bottom order.
+- Adjacent sections may repeat overlapping lines. Do not double-count overlap.
+- Preserve legitimate repeated purchases when they are separate printed occurrences.
+- Prefer tax, tip, and final total from the last page where those values appear.
 - Include every distinct purchased line item.
 - Do not include subtotal, tax, tip, total, or payment lines as items.
 - If a line has a discount or savings listed directly under it, apply the discount so the item price is the actual net paid amount.
@@ -67,7 +75,8 @@ Rules:
  * POST /api/split/receipt-scan
  * Accepts either:
  * - { raw_text: string } (Extracted locally via Apple Vision OCR, formatted by Gemini 3.5 Flash Lite in <500ms)
- * - { image: string } (Base64 image for full multimodal Gemini 3.5 Flash Lite extraction)
+ * - { image: string } (single base64 image)
+ * - { images: string[] } (2-10 ordered base64 images for one long receipt)
  */
 export async function POST(request: NextRequest) {
   const supabase = await createSupabaseServerClient();
@@ -104,10 +113,24 @@ export async function POST(request: NextRequest) {
   }
 
   const body = await request.json();
-  const { image, raw_text } = body as { image?: string; raw_text?: string };
+  const { image, images, raw_text } = body as {
+    image?: string;
+    images?: string[];
+    raw_text?: string;
+  };
 
-  if (!image && !raw_text) {
-    return NextResponse.json({ error: 'No image or raw_text provided' }, { status: 400 });
+  const receiptImages = Array.isArray(images)
+    ? images.filter((value): value is string => typeof value === 'string' && value.length > 0)
+    : image
+      ? [image]
+      : [];
+
+  if (receiptImages.length > 10) {
+    return NextResponse.json({ error: 'A receipt scan can include at most 10 images.' }, { status: 400 });
+  }
+
+  if (receiptImages.length === 0 && !raw_text) {
+    return NextResponse.json({ error: 'No image, images, or raw_text provided' }, { status: 400 });
   }
 
   let content: string | undefined;
@@ -191,11 +214,18 @@ export async function POST(request: NextRequest) {
   // ─────────────────────────────────────────────────────────────
   // PATH B: Multimodal Image Extraction (Direct Image or Fallback)
   // ─────────────────────────────────────────────────────────────
-  if (!content && image) {
-    const rawBase64 = image.replace(/^data:image\/[a-zA-Z]+;base64,/, '');
-    const dataUrl = image.startsWith('data:') ? image : `data:image/jpeg;base64,${image}`;
+  if (!content && receiptImages.length > 0) {
+    const normalizedImages = receiptImages.map((value) => {
+      const match = value.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,([\s\S]*)$/);
+      return {
+        mimeType: match?.[1] ?? 'image/jpeg',
+        rawBase64: match?.[2] ?? value,
+        dataUrl: value.startsWith('data:') ? value : `data:image/jpeg;base64,${value}`,
+      };
+    });
 
-    // 1. First attempt: Direct Google AI Studio Gemini API if configured
+    // 1. First attempt: Direct Google AI Studio Gemini API if configured.
+    // Send every page in one multimodal request so overlap can be reconciled globally.
     if (geminiKey) {
       const candidateModels = ['gemini-3.5-flash-lite', 'gemini-flash-lite-latest', 'gemini-3.8-flash'];
       for (const model of candidateModels) {
@@ -208,17 +238,21 @@ export async function POST(request: NextRequest) {
               contents: [
                 {
                   parts: [
-                    { inline_data: { mime_type: 'image/jpeg', data: rawBase64 } },
-                    { text: EXTRACTION_SYSTEM_PROMPT },
+                    ...normalizedImages.map(({ mimeType, rawBase64 }) => ({
+                      inline_data: { mime_type: mimeType, data: rawBase64 },
+                    })),
+                    {
+                      text: `${EXTRACTION_SYSTEM_PROMPT}\n\nThere are ${normalizedImages.length} ordered receipt image(s). Treat them as pages/sections of one receipt.`,
+                    },
                   ],
                 },
               ],
               generationConfig: {
                 response_mime_type: 'application/json',
-                max_output_tokens: 3000,
+                max_output_tokens: 4000,
               },
             }),
-            signal: AbortSignal.timeout(20_000),
+            signal: AbortSignal.timeout(35_000),
           });
 
           if (res.ok) {
@@ -234,7 +268,7 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // 2. Second attempt: OpenRouter using google/gemini-3.5-flash-lite
+    // 2. OpenRouter multimodal fallback.
     if (!content && openRouterKey) {
       try {
         const response = await fetch(OPENROUTER_API_URL, {
@@ -247,25 +281,25 @@ export async function POST(request: NextRequest) {
           },
           body: JSON.stringify({
             model: 'google/gemini-3.5-flash-lite',
-            max_tokens: 1500,
+            max_tokens: 2500,
             messages: [
               { role: 'system', content: EXTRACTION_SYSTEM_PROMPT },
               {
                 role: 'user',
                 content: [
-                  {
+                  ...normalizedImages.map(({ dataUrl }) => ({
                     type: 'image_url',
                     image_url: { url: dataUrl },
-                  },
+                  })),
                   {
                     type: 'text',
-                    text: 'Extract all line items, merchant store name, prices, tax, and total from this receipt image. Return ONLY the JSON object.',
+                    text: `These ${normalizedImages.length} image(s) are ordered sections of one receipt. Extract the receipt once, remove only overlap caused by adjacent photos, and return ONLY the JSON object.`,
                   },
                 ],
               },
             ],
           }),
-          signal: AbortSignal.timeout(30_000),
+          signal: AbortSignal.timeout(45_000),
         });
 
         if (response.ok) {
