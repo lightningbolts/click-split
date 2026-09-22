@@ -40,8 +40,8 @@ export async function POST(request: NextRequest) {
   const { groupId, description, totalAmount, paidBy, splitMethod, source, receiptImageUrl, items, customPercentages } = body;
 
   // Validate
-  if (!groupId || !description || !totalAmount || !paidBy || !splitMethod) {
-    return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
+  if (!groupId || !description?.trim() || !Number.isFinite(totalAmount) || totalAmount <= 0 || !paidBy || !splitMethod) {
+    return NextResponse.json({ error: 'Invalid or missing required fields' }, { status: 400 });
   }
 
   // Get group members
@@ -57,9 +57,12 @@ export async function POST(request: NextRequest) {
   const members = membersData as MemberRow[];
   const memberIds = members.map((m) => m.user_id);
 
-  // Verify current user is a member
+  // Verify current user is a member and the selected payer belongs to the group.
   if (!memberIds.includes(user.id)) {
     return NextResponse.json({ error: 'Not a member of this group' }, { status: 403 });
+  }
+  if (!memberIds.includes(paidBy)) {
+    return NextResponse.json({ error: 'Payer must be a member of the group' }, { status: 400 });
   }
 
   // Create the expense
@@ -96,6 +99,8 @@ export async function POST(request: NextRequest) {
 
     if (itemError) {
       console.error('Error inserting items:', itemError.message);
+      await supabase.from('split_expenses').delete().eq('id', expense.id);
+      return NextResponse.json({ error: 'Failed to save expense items' }, { status: 500 });
     }
   }
 
@@ -130,7 +135,8 @@ export async function POST(request: NextRequest) {
 
   if (shareError) {
     console.error('Error inserting shares:', shareError.message);
-    return NextResponse.json({ error: 'Failed to compute shares' }, { status: 500 });
+    await supabase.from('split_expenses').delete().eq('id', expense.id);
+    return NextResponse.json({ error: 'Failed to save expense shares' }, { status: 500 });
   }
 
   return NextResponse.json({ expense: { id: expense.id }, shares }, { status: 201 });
