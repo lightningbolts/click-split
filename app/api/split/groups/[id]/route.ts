@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
 import { createSupabaseServerClient, createSupabaseServiceRoleClient } from '@/lib/supabase/server';
 
+export const dynamic = 'force-dynamic';
+
 interface MemberRow {
   user_id: string;
   joined_at: string;
