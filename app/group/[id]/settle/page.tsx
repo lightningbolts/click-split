@@ -11,7 +11,6 @@ import { formatMoney } from '@/lib/balance';
 import {
   simplifyDebts,
   SimplifiedTransaction,
-  roundToCent,
 } from '@/lib/debtSimplification';
 import {
   PAYMENT_RAILS,
@@ -39,6 +38,8 @@ export default function SettleUpPage() {
   const [settled, setSettled] = useState(false);
   const [loading, setLoading] = useState(true);
   const [settling, setSettling] = useState(false);
+  const [pendingMethod, setPendingMethod] = useState<PaymentMethod | null>(null);
+  const [paymentInstructions, setPaymentInstructions] = useState<string | null>(null);
   const [viewAllGroupDebts, setViewAllGroupDebts] = useState(false);
 
   useEffect(() => {
@@ -117,60 +118,76 @@ export default function SettleUpPage() {
     }
   }, [selectedTx, activeRail]);
 
-  const handleSettle = async (method: PaymentMethod) => {
+  const recordSettlement = async (method: PaymentMethod | 'manual') => {
     if (!selectedTx || !user) return;
+    if (user.id !== selectedTx.fromUserId && user.id !== selectedTx.toUserId) return;
 
     setSettling(true);
-    const amount = selectedTx.amount;
-    const fromUser = selectedTx.fromUserId;
-    const toUser = selectedTx.toUserId;
-
-    // Save handle if provided
-    if (handleInput.trim() && method !== 'cash') {
-      try {
-        localStorage.setItem(`click_split_${toUser}_${method}`, handleInput.trim());
-      } catch {}
-    }
-
-    // Launch rail
-    if (method !== 'cash') {
-      await launchPaymentRail({
-        method,
-        recipientHandle: handleInput.trim() || undefined,
-        amount,
-        groupName,
-        recipientName: selectedTx.toName,
-      });
-    }
-
-    // Record settlement in Supabase
     try {
       const res = await fetch('/api/split/settlements', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           groupId,
-          fromUser,
-          toUser,
-          amount,
+          fromUser: selectedTx.fromUserId,
+          toUser: selectedTx.toUserId,
+          amount: selectedTx.amount,
           method,
         }),
       });
 
-      if (res.ok) {
-        setSettled(true);
-        // Refresh members
-        const refreshed = await fetch(`/api/split/groups/${groupId}`);
-        if (refreshed.ok) {
-          const d = await refreshed.json();
-          setMembers(d.members ?? []);
-        }
-      } else {
+      if (!res.ok) {
         const errData = await res.json().catch(() => ({}));
-        console.error('Settlement error:', errData);
+        throw new Error(errData.error ?? 'Failed to record settlement');
+      }
+
+      setSettled(true);
+      setPendingMethod(null);
+      setPaymentInstructions(null);
+
+      const refreshed = await fetch(`/api/split/groups/${groupId}`);
+      if (refreshed.ok) {
+        const data = await refreshed.json();
+        setMembers(data.members ?? []);
       }
     } catch (err) {
       console.error('Settlement error:', err);
+    } finally {
+      setSettling(false);
+    }
+  };
+
+  const handlePaymentMethod = async (method: PaymentMethod) => {
+    if (!selectedTx || !user) return;
+
+    if (method === 'cash') {
+      await recordSettlement('cash');
+      return;
+    }
+
+    // Only the debtor should launch a payment rail. Opening an external app is
+    // not proof that a transfer completed, so settlement is confirmed separately.
+    if (user.id !== selectedTx.fromUserId) return;
+
+    if (handleInput.trim()) {
+      try {
+        localStorage.setItem(`click_split_${selectedTx.toUserId}_${method}`, handleInput.trim());
+      } catch {}
+    }
+
+    setSettling(true);
+    try {
+      const result = await launchPaymentRail({
+        method,
+        recipientHandle: handleInput.trim() || undefined,
+        amount: selectedTx.amount,
+        groupName,
+        recipientName: selectedTx.toName,
+      });
+      if (result.launched) {
+        setPendingMethod(method);
+        setPaymentInstructions(result.instructions ?? null);
+      }
     } finally {
       setSettling(false);
     }
@@ -269,7 +286,7 @@ export default function SettleUpPage() {
                       key={tx.id}
                       type="button"
                       className="pay-opt"
-                      onClick={() => { setSelectedTx(tx); setActiveRail(null); }}
+                      onClick={() => { setSelectedTx(tx); setActiveRail(null); setPendingMethod(null); setPaymentInstructions(null); }}
                       style={{
                         border: tx.id === selectedTx.id ? '2px solid var(--ink)' : '1px solid var(--paper-dim)',
                         background: tx.id === selectedTx.id ? 'var(--green-dim)' : 'var(--white)',
@@ -308,10 +325,12 @@ export default function SettleUpPage() {
                         key={tx.id}
                         type="button"
                         className="pay-opt"
-                        onClick={() => { setSelectedTx(tx); setActiveRail(null); }}
+                        disabled
                         style={{
-                          border: tx.id === selectedTx.id ? '2px solid var(--ink)' : '1px solid var(--paper-dim)',
-                          background: tx.id === selectedTx.id ? 'var(--paper-dim)' : 'var(--white)',
+                          border: '1px solid var(--paper-dim)',
+                          background: 'var(--white)',
+                          cursor: 'default',
+                          opacity: 0.75,
                         }}
                       >
                         <div className="p-name">
@@ -324,13 +343,17 @@ export default function SettleUpPage() {
                 </div>
               </div>
 
-              {/* Payment Rails Section */}
-              <div className="section-head" style={{ padding: '12px 24px 8px' }}>
-                <h2>Select Payment Method</h2>
-              </div>
+              {isCurrentUserPaying && (
+                <>
+                  {/* Payment Rails Section */}
+                  <div className="section-head" style={{ padding: '12px 24px 8px' }}>
+                    <h2>Select Payment Method</h2>
+                  </div>
+                </>
+              )}
 
               {/* Recipient Handle Prompt if active rail requires it */}
-              {activeRail && activeRail !== 'cash' && (
+              {isCurrentUserPaying && activeRail && activeRail !== 'cash' && (
                 <div
                   style={{
                     margin: '0 24px 16px',
@@ -368,77 +391,119 @@ export default function SettleUpPage() {
                       type="button"
                       className="btn btn-primary btn-small"
                       disabled={settling}
-                      onClick={() => void handleSettle(activeRail)}
+                      onClick={() => void handlePaymentMethod(activeRail)}
                     >
-                      {settling ? 'Launching…' : `Pay & Record`}
+                      {settling ? 'Opening…' : `Open payment app`}
                     </button>
                   </div>
                 </div>
               )}
 
-              {/* 5-Way Payment Rails */}
+              {/* Payment rails are only actionable for the payer. */}
+              {isCurrentUserPaying && (
               <div style={{ padding: '0 24px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
                 <PaymentOption
                   icon="V"
                   label="Venmo"
                   subtitle="Open Venmo app / web with note pre-filled"
                   badgeColor="#008CFF"
-                  onClick={() => {
-                    setActiveRail('venmo');
-                    if (handleInput) void handleSettle('venmo');
-                  }}
+                  onClick={() => { setActiveRail('venmo'); setPendingMethod(null); }}
                 />
                 <PaymentOption
                   icon="P"
                   label="PayPal"
                   subtitle="Instant transfer via PayPal.Me"
                   badgeColor="#003087"
-                  onClick={() => {
-                    setActiveRail('paypal');
-                    if (handleInput) void handleSettle('paypal');
-                  }}
+                  onClick={() => { setActiveRail('paypal'); setPendingMethod(null); }}
                 />
                 <PaymentOption
                   icon="$"
                   label="Cash App"
                   subtitle="Pay directly with $Cashtag"
                   badgeColor="#00D632"
-                  onClick={() => {
-                    setActiveRail('cashapp');
-                    if (handleInput) void handleSettle('cashapp');
-                  }}
+                  onClick={() => { setActiveRail('cashapp'); setPendingMethod(null); }}
                 />
                 <PaymentOption
                   icon="Z"
                   label="Zelle"
                   subtitle="Bank-to-bank direct transfer"
                   badgeColor="#7414CA"
-                  onClick={() => {
-                    setActiveRail('zelle');
-                    if (handleInput) void handleSettle('zelle');
-                  }}
+                  onClick={() => { setActiveRail('zelle'); setPendingMethod(null); }}
                 />
                 <PaymentOption
                   icon="A"
                   label="Apple Pay / Cash"
                   subtitle="Apple Cash message or native payment sheet"
                   badgeColor="#000000"
-                  onClick={() => void handleSettle('applepay')}
+                  onClick={() => { setActiveRail('applepay'); setPendingMethod(null); }}
                 />
                 <PaymentOption
                   icon="G"
                   label="Google Pay"
                   subtitle="Google Wallet & Web transfer"
                   badgeColor="#4285F4"
-                  onClick={() => void handleSettle('googlepay')}
+                  onClick={() => { setActiveRail('googlepay'); setPendingMethod(null); }}
                 />
                 <PaymentOption
                   icon="✓"
                   label="Cash / Marked as Paid"
                   subtitle="Record settlement directly without opening external apps"
-                  onClick={() => void handleSettle('cash')}
+                  onClick={() => void handlePaymentMethod('cash')}
                 />
               </div>
+              )}
+
+              {isCurrentUserReceiving && (
+                <div style={{ padding: '12px 24px 0' }}>
+                  <button
+                    type="button"
+                    className="btn btn-primary btn-block"
+                    disabled={settling}
+                    onClick={() => void recordSettlement('manual')}
+                  >
+                    {settling ? 'Recording…' : 'Mark payment as received'}
+                  </button>
+                  <p style={{ marginTop: '8px', fontSize: '12px', color: 'var(--grey)', lineHeight: 1.5 }}>
+                    Only confirm this after you have actually received the payment.
+                  </p>
+                </div>
+              )}
+
+              {!isCurrentUserPaying && !isCurrentUserReceiving && (
+                <div style={{ padding: '12px 24px 0', fontSize: '13px', color: 'var(--grey)' }}>
+                  This debt is between other group members and is shown for reference only.
+                </div>
+              )}
+
+              {pendingMethod && isCurrentUserPaying && (
+                <div style={{ margin: '16px 24px 0', padding: '14px', border: '2px solid var(--ink)', background: 'var(--green-dim)' }}>
+                  <div style={{ fontSize: '13px', fontWeight: 800 }}>Payment app opened</div>
+                  <p style={{ marginTop: '6px', fontSize: '12px', lineHeight: 1.5, color: 'var(--ink-soft)' }}>
+                    Returning to Click Split does not confirm that the transfer completed. Record it only after the payment succeeds.
+                  </p>
+                  {paymentInstructions && (
+                    <p style={{ marginTop: '6px', fontSize: '12px', lineHeight: 1.5 }}>{paymentInstructions}</p>
+                  )}
+                  <div style={{ display: 'flex', gap: '8px', marginTop: '12px' }}>
+                    <button
+                      type="button"
+                      className="btn btn-primary btn-small"
+                      disabled={settling}
+                      onClick={() => void recordSettlement(pendingMethod)}
+                    >
+                      {settling ? 'Recording…' : 'Payment completed'}
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-small"
+                      disabled={settling}
+                      onClick={() => { setPendingMethod(null); setPaymentInstructions(null); }}
+                    >
+                      Not yet
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 

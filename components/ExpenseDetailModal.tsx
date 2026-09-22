@@ -110,6 +110,14 @@ export default function ExpenseDetailModal({
           totalAmount: parseFloat(editAmount),
           paidBy: editPayer,
           splitMethod: expense?.split_method ?? 'even',
+          customPercentages: expense?.split_method === 'custom_percent' && Number(expense.total_amount) > 0
+            ? Object.fromEntries(
+                shares.map((share) => [
+                  share.user_id,
+                  (Number(share.share_amount) / Number(expense.total_amount)) * 100,
+                ]),
+              )
+            : undefined,
           items: items.map((i) => ({
             label: i.label,
             price: Number(i.price),
@@ -271,7 +279,11 @@ export default function ExpenseDetailModal({
                       {formatMoney(Number(expense.total_amount))}
                     </div>
                     <span className="chip chip-dim" style={{ marginTop: '4px' }}>
-                      {expense.split_method === 'by_item' ? 'Itemized' : 'Split equally'}
+                      {expense.split_method === 'by_item'
+                        ? 'Itemized'
+                        : expense.split_method === 'custom_percent'
+                        ? 'Custom split'
+                        : 'Split equally'}
                     </span>
                   </div>
                 </div>

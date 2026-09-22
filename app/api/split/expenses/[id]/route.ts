@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 import { createSupabaseServerClient } from '@/lib/supabase/server';
+import { computeExpenseShares } from '@/lib/shareCalculation';
 
 interface ExpenseItem {
   id?: string;
@@ -15,6 +16,7 @@ interface UpdateExpenseBody {
   paidBy: string;
   splitMethod: 'even' | 'by_item' | 'custom_percent';
   items?: ExpenseItem[];
+  customPercentages?: Record<string, number>;
 }
 
 /**
@@ -111,9 +113,43 @@ export async function PUT(
   }
 
   const body = (await request.json()) as UpdateExpenseBody;
-  const { description, totalAmount, paidBy, splitMethod, items } = body;
+  const { description, totalAmount, paidBy, splitMethod, items, customPercentages } = body;
 
-  // Update expense record
+  if (!description?.trim() || !Number.isFinite(totalAmount) || totalAmount <= 0 || !paidBy) {
+    return NextResponse.json({ error: 'Invalid expense fields' }, { status: 400 });
+  }
+
+  // Fetch all group members before mutating anything so the split can be validated first.
+  const { data: membersData, error: membersError } = await supabase
+    .from('split_group_members')
+    .select('user_id')
+    .eq('group_id', existing.group_id);
+
+  if (membersError || !membersData || membersData.length === 0) {
+    return NextResponse.json({ error: 'Group members could not be loaded' }, { status: 400 });
+  }
+
+  const memberIds = membersData.map((m: { user_id: string }) => m.user_id);
+  if (!memberIds.includes(paidBy)) {
+    return NextResponse.json({ error: 'Payer must be a member of the group' }, { status: 400 });
+  }
+
+  let computedShares;
+  try {
+    computedShares = computeExpenseShares({
+      totalAmount,
+      memberIds,
+      splitMethod,
+      items: items?.map((item) => ({ price: item.price, assignedTo: item.assignedTo })) ?? [],
+      customPercentages,
+    });
+  } catch (error) {
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : 'Invalid split configuration' },
+      { status: 400 },
+    );
+  }
+
   const { error: updateError } = await supabase
     .from('split_expenses')
     .update({
@@ -128,71 +164,45 @@ export async function PUT(
     return NextResponse.json({ error: updateError.message }, { status: 500 });
   }
 
-  // Re-write items
-  await supabase.from('split_expense_items').delete().eq('expense_id', id);
-  if (items && items.length > 0) {
-    await supabase.from('split_expense_items').insert(
-      items.map((i) => ({
-        expense_id: id,
-        label: i.label,
-        price: i.price,
-        assigned_to: i.assignedTo,
-      })),
-    );
+  const { error: deleteItemsError } = await supabase
+    .from('split_expense_items')
+    .delete()
+    .eq('expense_id', id);
+  if (deleteItemsError) {
+    return NextResponse.json({ error: deleteItemsError.message }, { status: 500 });
   }
 
-  // Fetch all group members for share recomputation
-  const { data: membersData } = await supabase
-    .from('split_group_members')
-    .select('user_id')
-    .eq('group_id', existing.group_id);
-
-  const memberIds = (membersData ?? []).map((m: { user_id: string }) => m.user_id);
-
-  // Recompute shares
-  await supabase.from('split_expense_shares').delete().eq('expense_id', id);
-
-  if (splitMethod === 'even' || !items || items.length === 0) {
-    const sharePerPerson = Math.round((totalAmount / memberIds.length) * 100) / 100;
-    let remainder = Math.round((totalAmount - sharePerPerson * memberIds.length) * 100) / 100;
-
-    const shareRows = memberIds.map((mId: string, idx: number) => {
-      let amount = sharePerPerson;
-      if (idx === 0 && remainder !== 0) {
-        amount = Math.round((amount + remainder) * 100) / 100;
-      }
-      return {
+  if (items && items.length > 0) {
+    const { error: itemError } = await supabase.from('split_expense_items').insert(
+      items.map((item) => ({
         expense_id: id,
-        user_id: mId,
-        share_amount: amount,
-      };
-    });
-
-    await supabase.from('split_expense_shares').insert(shareRows);
-  } else {
-    // Itemized shares
-    const memberTotals: Record<string, number> = {};
-    for (const mId of memberIds) {
-      memberTotals[mId] = 0;
+        label: item.label,
+        price: item.price,
+        assigned_to: item.assignedTo,
+      })),
+    );
+    if (itemError) {
+      return NextResponse.json({ error: itemError.message }, { status: 500 });
     }
+  }
 
-    let sharedItemTotal = 0;
-    for (const item of items) {
-      if (item.assignedTo && memberTotals[item.assignedTo] !== undefined) {
-        memberTotals[item.assignedTo] += item.price;
-      } else {
-        sharedItemTotal += item.price;
-      }
-    }
+  const { error: deleteSharesError } = await supabase
+    .from('split_expense_shares')
+    .delete()
+    .eq('expense_id', id);
+  if (deleteSharesError) {
+    return NextResponse.json({ error: deleteSharesError.message }, { status: 500 });
+  }
 
-    const sharedPerPerson = sharedItemTotal / memberIds.length;
-    const shareRows = memberIds.map((mId: string) => ({
+  const { error: shareError } = await supabase.from('split_expense_shares').insert(
+    computedShares.map((share) => ({
       expense_id: id,
-      user_id: mId,
-      share_amount: Math.round((memberTotals[mId] + sharedPerPerson) * 100) / 100,
-    }));
-
-    await supabase.from('split_expense_shares').insert(shareRows);
+      user_id: share.userId,
+      share_amount: share.amount,
+    })),
+  );
+  if (shareError) {
+    return NextResponse.json({ error: shareError.message }, { status: 500 });
   }
 
   return NextResponse.json({ success: true });

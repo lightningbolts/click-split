@@ -25,8 +25,13 @@ export async function POST(request: NextRequest) {
   const actualFrom = fromUser || user.id;
   const actualTo = toUser;
 
-  if (!groupId || !actualFrom || !actualTo || !amount || amount <= 0) {
-    return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
+  const allowedMethods = new Set(['venmo', 'paypal', 'cashapp', 'zelle', 'applepay', 'googlepay', 'cash', 'manual']);
+
+  if (!groupId || !actualFrom || !actualTo || !Number.isFinite(amount) || amount <= 0) {
+    return NextResponse.json({ error: 'Missing or invalid required fields' }, { status: 400 });
+  }
+  if (!allowedMethods.has(method ?? 'cash')) {
+    return NextResponse.json({ error: 'Unsupported settlement method' }, { status: 400 });
   }
 
   if (actualFrom === actualTo) {
@@ -47,6 +52,30 @@ export async function POST(request: NextRequest) {
 
   if (!members || members.length < 2) {
     return NextResponse.json({ error: 'Both users must be members of this group' }, { status: 400 });
+  }
+
+  // Verify the payment cannot over-settle either side of the current group balance.
+  const [{ data: fromBalance, error: fromBalanceError }, { data: toBalance, error: toBalanceError }] = await Promise.all([
+    supabase.rpc('calculate_split_group_balance', { p_group_id: groupId, p_user_id: actualFrom }),
+    supabase.rpc('calculate_split_group_balance', { p_group_id: groupId, p_user_id: actualTo }),
+  ]);
+
+  if (fromBalanceError || toBalanceError) {
+    return NextResponse.json({ error: 'Could not validate current balances' }, { status: 500 });
+  }
+
+  const payerBalance = Number(fromBalance ?? 0);
+  const recipientBalance = Number(toBalance ?? 0);
+  const amountCents = Math.round(amount * 100);
+  const payerOwesCents = Math.max(0, Math.round(-payerBalance * 100));
+  const recipientIsOwedCents = Math.max(0, Math.round(recipientBalance * 100));
+
+  if (payerOwesCents === 0 || recipientIsOwedCents === 0) {
+    return NextResponse.json({ error: 'This settlement no longer matches the current balances' }, { status: 409 });
+  }
+
+  if (amountCents > payerOwesCents || amountCents > recipientIsOwedCents) {
+    return NextResponse.json({ error: 'Settlement amount exceeds the current outstanding balance' }, { status: 409 });
   }
 
   // Create settlement
