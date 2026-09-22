@@ -4,28 +4,66 @@ import { createSupabaseServerClient } from '@/lib/supabase/server';
 
 const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions';
 
-const EXTRACTION_SYSTEM_PROMPT = `You are a receipt parsing assistant. Given raw OCR text from a receipt, extract all line items and the total.
+const EXTRACTION_SYSTEM_PROMPT = `You are a professional receipt OCR and parsing assistant.
+Given an image of a receipt, extract:
+1. "merchant": The store, restaurant, or business name (e.g. "Safeway", "Trader Joe's", "Target", "Starbucks").
+2. "date": Date of purchase in YYYY-MM-DD format if visible, or null.
+3. "items": All purchased line items. For each item:
+   - "label": Clean, human-readable item name (remove barcode numbers/SKUs).
+   - "price": The final amount paid for this item (as a number). If both regular price and discounted/member price appear, use the final discounted price paid.
+4. "tax": Sales tax amount as a number if itemized, otherwise 0.
+5. "detected_total": The final total / balance charged to the customer.
 
-Return ONLY a valid JSON object with this exact structure:
+Return ONLY a valid JSON object matching this structure:
 {
+  "merchant": "Safeway",
+  "date": "2026-09-21",
   "items": [
     { "label": "Item name", "price": 4.99 }
   ],
+  "tax": 0.03,
   "detected_total": 42.50
 }
 
 Rules:
-- Include every line item with a price
-- Prices must be numbers, not strings
-- If you cannot determine the total, sum the items and use that
-- Do not include tax as a line item unless it appears as a separate charge
-- Clean up garbled OCR text into readable item names
-- Do not include any text outside the JSON object`;
+- Include every distinct purchased line item.
+- Do not include subtotal, total, or payment lines as items.
+- Prices must be positive decimal numbers.
+- Return ONLY the JSON object.`;
+
+const TEXT_EXTRACTION_SYSTEM_PROMPT = `You are a professional receipt parser.
+Given raw OCR text lines from a receipt, extract:
+1. "merchant": The store, restaurant, or business name (e.g. "Safeway", "Trader Joe's", "Target", "Starbucks").
+2. "date": Date of purchase in YYYY-MM-DD format if visible, or null.
+3. "items": All purchased line items. For each item:
+   - "label": Clean, human-readable item name without barcodes or trailing item codes.
+   - "price": The final amount paid for this item (as a number). If both regular price and discounted/member price appear, use the final discounted price paid.
+4. "tax": Sales tax amount as a number if itemized, otherwise 0.
+5. "detected_total": The final total / balance charged to the customer.
+
+Return ONLY a valid JSON object matching this structure:
+{
+  "merchant": "Safeway",
+  "date": "2026-09-21",
+  "items": [
+    { "label": "Item name", "price": 4.99 }
+  ],
+  "tax": 0.03,
+  "detected_total": 42.50
+}
+
+Rules:
+- Include every distinct purchased line item.
+- Do not include subtotal, tax, tip, total, or payment lines as items.
+- If a line has a discount or savings listed directly under it, apply the discount so the item price is the actual net paid amount.
+- Prices must be positive decimal numbers.
+- Return ONLY the JSON object.`;
 
 /**
  * POST /api/split/receipt-scan
- * Accepts a base64 image, sends it to OpenRouter for structured extraction.
- * Falls back to text-only extraction if vision is not available.
+ * Accepts either:
+ * - { raw_text: string } (Extracted locally via Apple Vision OCR, formatted by Gemini 3.5 Flash Lite in <500ms)
+ * - { image: string } (Base64 image for full multimodal Gemini 3.5 Flash Lite extraction)
  */
 export async function POST(request: NextRequest) {
   const supabase = await createSupabaseServerClient();
@@ -51,75 +89,202 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  const apiKey = process.env.OPENROUTER_API_KEY;
-  if (!apiKey) {
+  const openRouterKey = process.env.OPENROUTER_API_KEY;
+  const geminiKey = process.env.GEMINI_API_KEY;
+
+  if (!openRouterKey && !geminiKey) {
     return NextResponse.json(
-      { error: 'Receipt scanning is not configured. Set OPENROUTER_API_KEY.' },
+      { error: 'Receipt scanning is not configured. Set OPENROUTER_API_KEY or GEMINI_API_KEY.' },
       { status: 503 },
     );
   }
 
   const body = await request.json();
-  const { image } = body as { image: string };
+  const { image, raw_text } = body as { image?: string; raw_text?: string };
 
-  if (!image) {
-    return NextResponse.json({ error: 'No image provided' }, { status: 400 });
+  if (!image && !raw_text) {
+    return NextResponse.json({ error: 'No image or raw_text provided' }, { status: 400 });
   }
 
-  // Determine if image is a data URL or raw base64
-  const imageUrl = image.startsWith('data:') ? image : `data:image/jpeg;base64,${image}`;
+  let content: string | undefined;
 
-  try {
-    const response = await fetch(OPENROUTER_API_URL, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-        'HTTP-Referer': process.env.NEXT_PUBLIC_BASE_URL ?? 'http://localhost:3001',
-        'X-Title': 'Click Split',
-      },
-      body: JSON.stringify({
-        model: 'openai/gpt-4o-mini',
-        max_tokens: 1500,
-        messages: [
-          { role: 'system', content: EXTRACTION_SYSTEM_PROMPT },
-          {
-            role: 'user',
-            content: [
-              {
-                type: 'image_url',
-                image_url: { url: imageUrl },
+  // ─────────────────────────────────────────────────────────────
+  // PATH A: Fast Raw OCR Text Formatting (from Apple Vision OCR)
+  // ─────────────────────────────────────────────────────────────
+  if (raw_text && raw_text.trim().length > 0) {
+    // 1. Direct AI Studio Gemini text completion
+    if (geminiKey) {
+      const candidateModels = ['gemini-3.5-flash-lite', 'gemini-flash-lite-latest', 'gemini-3.8-flash'];
+      for (const model of candidateModels) {
+        try {
+          const aiStudioUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${geminiKey}`;
+          const res = await fetch(aiStudioUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              contents: [
+                {
+                  parts: [
+                    { text: `${TEXT_EXTRACTION_SYSTEM_PROMPT}\n\n--- RAW RECEIPT OCR TEXT ---\n${raw_text}` },
+                  ],
+                },
+              ],
+              generationConfig: {
+                response_mime_type: 'application/json',
+                max_output_tokens: 3000,
               },
+            }),
+            signal: AbortSignal.timeout(15_000),
+          });
+
+          if (res.ok) {
+            const json = await res.json() as {
+              candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+            };
+            content = json.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+            if (content) break;
+          }
+        } catch (err) {
+          console.warn(`AI Studio text formatting ${model} failed:`, err);
+        }
+      }
+    }
+
+    // 2. OpenRouter text completion fallback
+    if (!content && openRouterKey) {
+      try {
+        const response = await fetch(OPENROUTER_API_URL, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${openRouterKey}`,
+            'Content-Type': 'application/json',
+            'HTTP-Referer': process.env.NEXT_PUBLIC_BASE_URL ?? 'https://split.joinclick.co',
+            'X-Title': 'Click Split',
+          },
+          body: JSON.stringify({
+            model: 'google/gemini-3.5-flash-lite',
+            max_tokens: 1500,
+            messages: [
+              { role: 'system', content: TEXT_EXTRACTION_SYSTEM_PROMPT },
+              { role: 'user', content: `--- RAW RECEIPT OCR TEXT ---\n${raw_text}` },
+            ],
+          }),
+          signal: AbortSignal.timeout(20_000),
+        });
+
+        if (response.ok) {
+          const json = await response.json() as {
+            choices?: Array<{ message?: { content?: string } }>;
+          };
+          content = json.choices?.[0]?.message?.content?.trim();
+        }
+      } catch (openRouterErr) {
+        console.warn('OpenRouter raw_text formatting error:', openRouterErr);
+      }
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // PATH B: Multimodal Image Extraction (Direct Image or Fallback)
+  // ─────────────────────────────────────────────────────────────
+  if (!content && image) {
+    const rawBase64 = image.replace(/^data:image\/[a-zA-Z]+;base64,/, '');
+    const dataUrl = image.startsWith('data:') ? image : `data:image/jpeg;base64,${image}`;
+
+    // 1. First attempt: Direct Google AI Studio Gemini API if configured
+    if (geminiKey) {
+      const candidateModels = ['gemini-3.5-flash-lite', 'gemini-flash-lite-latest', 'gemini-3.8-flash'];
+      for (const model of candidateModels) {
+        try {
+          const aiStudioUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${geminiKey}`;
+          const res = await fetch(aiStudioUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              contents: [
+                {
+                  parts: [
+                    { inline_data: { mime_type: 'image/jpeg', data: rawBase64 } },
+                    { text: EXTRACTION_SYSTEM_PROMPT },
+                  ],
+                },
+              ],
+              generationConfig: {
+                response_mime_type: 'application/json',
+                max_output_tokens: 3000,
+              },
+            }),
+            signal: AbortSignal.timeout(20_000),
+          });
+
+          if (res.ok) {
+            const json = await res.json() as {
+              candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+            };
+            content = json.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+            if (content) break;
+          }
+        } catch (aiStudioErr) {
+          console.warn(`AI Studio ${model} attempt failed:`, aiStudioErr);
+        }
+      }
+    }
+
+    // 2. Second attempt: OpenRouter using google/gemini-3.5-flash-lite
+    if (!content && openRouterKey) {
+      try {
+        const response = await fetch(OPENROUTER_API_URL, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${openRouterKey}`,
+            'Content-Type': 'application/json',
+            'HTTP-Referer': process.env.NEXT_PUBLIC_BASE_URL ?? 'https://split.joinclick.co',
+            'X-Title': 'Click Split',
+          },
+          body: JSON.stringify({
+            model: 'google/gemini-3.5-flash-lite',
+            max_tokens: 1500,
+            messages: [
+              { role: 'system', content: EXTRACTION_SYSTEM_PROMPT },
               {
-                type: 'text',
-                text: 'Extract all line items and prices from this receipt. Return only the JSON object.',
+                role: 'user',
+                content: [
+                  {
+                    type: 'image_url',
+                    image_url: { url: dataUrl },
+                  },
+                  {
+                    type: 'text',
+                    text: 'Extract all line items, merchant store name, prices, tax, and total from this receipt image. Return ONLY the JSON object.',
+                  },
+                ],
               },
             ],
-          },
-        ],
-      }),
-      signal: AbortSignal.timeout(30_000),
-    });
+          }),
+          signal: AbortSignal.timeout(30_000),
+        });
 
-    if (!response.ok) {
-      const errBody = await response.json().catch(() => ({}));
-      console.error('OpenRouter error:', response.status, errBody);
-      return NextResponse.json(
-        { error: `LLM request failed: ${response.status}` },
-        { status: 502 },
-      );
+        if (response.ok) {
+          const json = await response.json() as {
+            choices?: Array<{ message?: { content?: string } }>;
+          };
+          content = json.choices?.[0]?.message?.content?.trim();
+        } else {
+          const errBody = await response.json().catch(() => ({}));
+          console.error('OpenRouter Gemini error:', response.status, errBody);
+        }
+      } catch (openRouterErr) {
+        console.error('OpenRouter request error:', openRouterErr);
+      }
     }
+  }
 
-    const json = await response.json() as {
-      choices?: Array<{ message?: { content?: string } }>;
-    };
+  if (!content) {
+    return NextResponse.json({ error: 'Failed to extract receipt with Gemini vision engine.' }, { status: 502 });
+  }
 
-    const content = json.choices?.[0]?.message?.content?.trim();
-    if (!content) {
-      return NextResponse.json({ error: 'Empty response from LLM' }, { status: 502 });
-    }
-
-    // Extract JSON from the response (handle markdown code blocks)
+  try {
+    // Extract JSON from response (handling markdown code blocks if any)
     let jsonStr = content;
     const codeBlockMatch = content.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
     if (codeBlockMatch) {
@@ -127,25 +292,29 @@ export async function POST(request: NextRequest) {
     }
 
     const parsed = JSON.parse(jsonStr) as {
+      merchant?: string;
+      date?: string;
+      tax?: number;
       items: Array<{ label: string; price: number }>;
       detected_total: number;
     };
 
-    // Validate structure
     if (!Array.isArray(parsed.items)) {
-      return NextResponse.json({ error: 'Invalid extraction result' }, { status: 502 });
+      return NextResponse.json({ error: 'Invalid extraction format' }, { status: 502 });
     }
 
     return NextResponse.json({
+      merchant: parsed.merchant ? String(parsed.merchant).trim() : undefined,
+      date: parsed.date ? String(parsed.date).trim() : undefined,
+      tax: typeof parsed.tax === 'number' ? parsed.tax : 0,
       items: parsed.items.map((item) => ({
-        label: String(item.label),
+        label: String(item.label).trim(),
         price: Number(item.price),
       })),
       detected_total: Number(parsed.detected_total ?? parsed.items.reduce((sum, i) => sum + Number(i.price), 0)),
     });
   } catch (err) {
-    console.error('Receipt scan error:', err);
-    const message = err instanceof SyntaxError ? 'Failed to parse LLM response' : 'Receipt scan failed';
-    return NextResponse.json({ error: message }, { status: 500 });
+    console.error('Receipt parse error:', err);
+    return NextResponse.json({ error: 'Failed to parse receipt data' }, { status: 500 });
   }
 }

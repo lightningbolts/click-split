@@ -135,7 +135,13 @@ export default function AddExpensePage() {
       const detected = Number(data.detected_total ?? items.reduce((s: number, i: ScannedItem) => s + i.price, 0));
       setTotalAmount(detected.toFixed(2));
 
-      if (!description && items.length > 0) {
+      if (data.tax && (!taxInput || taxInput === '0')) {
+        setTaxInput(Number(data.tax).toFixed(2));
+      }
+
+      if (data.merchant) {
+        setDescription(data.merchant);
+      } else if (!description && items.length > 0) {
         setDescription('Scanned receipt');
       }
     } catch (err) {
