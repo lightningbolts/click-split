@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 import { createSupabaseServerClient } from '@/lib/supabase/server';
+import { computeExpenseShares } from '@/lib/shareCalculation';
 
 interface ExpenseItem {
   label: string;
@@ -17,6 +18,7 @@ interface CreateExpenseBody {
   source?: 'manual' | 'receipt_scan';
   receiptImageUrl?: string;
   items?: ExpenseItem[];
+  customPercentages?: Record<string, number>;
 }
 
 interface MemberRow {
@@ -35,7 +37,7 @@ export async function POST(request: NextRequest) {
   }
 
   const body = (await request.json()) as CreateExpenseBody;
-  const { groupId, description, totalAmount, paidBy, splitMethod, source, receiptImageUrl, items } = body;
+  const { groupId, description, totalAmount, paidBy, splitMethod, source, receiptImageUrl, items, customPercentages } = body;
 
   // Validate
   if (!groupId || !description || !totalAmount || !paidBy || !splitMethod) {
@@ -97,49 +99,30 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  // Compute shares based on split method
-  const shares: Array<{ expense_id: string; user_id: string; share_amount: number }> = [];
-
-  if (splitMethod === 'even') {
-    const perPerson = Math.round((totalAmount / memberIds.length) * 100) / 100;
-    // Adjust for rounding - give the remainder to the last person
-    let remaining = totalAmount;
-    memberIds.forEach((memberId: string, i: number) => {
-      const share = i === memberIds.length - 1 ? Math.round(remaining * 100) / 100 : perPerson;
-      shares.push({ expense_id: expense.id, user_id: memberId, share_amount: share });
-      remaining -= perPerson;
+  // Compute shares through one cent-safe implementation shared with updates.
+  let computedShares;
+  try {
+    computedShares = computeExpenseShares({
+      totalAmount,
+      memberIds,
+      splitMethod,
+      items: items?.map((item) => ({ price: item.price, assignedTo: item.assignedTo })) ?? [],
+      customPercentages,
     });
-  } else if (splitMethod === 'by_item' && items && items.length > 0) {
-    // Items assigned to specific users go to them; unassigned items split evenly
-    const userTotals = new Map<string, number>();
-    memberIds.forEach((id: string) => userTotals.set(id, 0));
-
-    let unassignedTotal = 0;
-    for (const item of items) {
-      if (item.assignedTo && memberIds.includes(item.assignedTo)) {
-        userTotals.set(item.assignedTo, (userTotals.get(item.assignedTo) ?? 0) + item.price);
-      } else {
-        unassignedTotal += item.price;
-      }
-    }
-
-    // Split unassigned items evenly
-    const unassignedPerPerson = unassignedTotal / memberIds.length;
-    memberIds.forEach((id: string) => {
-      const total = (userTotals.get(id) ?? 0) + unassignedPerPerson;
-      shares.push({
-        expense_id: expense.id,
-        user_id: id,
-        share_amount: Math.round(total * 100) / 100,
-      });
-    });
-  } else {
-    // Default to even split
-    const perPerson = Math.round((totalAmount / memberIds.length) * 100) / 100;
-    memberIds.forEach((memberId: string) => {
-      shares.push({ expense_id: expense.id, user_id: memberId, share_amount: perPerson });
-    });
+  } catch (error) {
+    // Avoid leaving a partially-created expense if share validation fails.
+    await supabase.from('split_expenses').delete().eq('id', expense.id);
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : 'Invalid split configuration' },
+      { status: 400 },
+    );
   }
+
+  const shares = computedShares.map((share) => ({
+    expense_id: expense.id,
+    user_id: share.userId,
+    share_amount: share.amount,
+  }));
 
   const { error: shareError } = await supabase
     .from('split_expense_shares')
