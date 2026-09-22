@@ -6,6 +6,7 @@ import Topbar from '@/components/Topbar';
 import BalanceHero from '@/components/BalanceHero';
 import GroupCard from '@/components/GroupCard';
 import FAB from '@/components/FAB';
+import JoinGroupModal from '@/components/JoinGroupModal';
 import Link from 'next/link';
 
 interface GroupData {
@@ -22,6 +23,7 @@ export default function DashboardPage() {
   const { user, loading: authLoading } = useAuth();
   const [groups, setGroups] = useState<GroupData[]>([]);
   const [loading, setLoading] = useState(true);
+  const [isJoinModalOpen, setIsJoinModalOpen] = useState(false);
 
   useEffect(() => {
     if (authLoading) return;
@@ -79,32 +81,64 @@ export default function DashboardPage() {
 
         <div className="section-head">
           <h2>Your groups</h2>
-          <Link
-            href="/group/new"
-            style={{
-              fontSize: '13px',
-              fontWeight: 800,
-              color: 'var(--green)',
-              textDecoration: 'none',
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: '4px',
-            }}
-          >
-            + New group
-          </Link>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+            <button
+              type="button"
+              onClick={() => setIsJoinModalOpen(true)}
+              style={{
+                background: 'none',
+                border: 'none',
+                padding: 0,
+                fontSize: '13px',
+                fontWeight: 800,
+                color: 'var(--ink-soft)',
+                cursor: 'pointer',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '4px',
+                fontFamily: 'inherit',
+              }}
+            >
+              Join group
+            </button>
+            <span style={{ color: 'var(--grey)', fontSize: '12px' }}>•</span>
+            <Link
+              href="/group/new"
+              style={{
+                fontSize: '13px',
+                fontWeight: 800,
+                color: 'var(--green)',
+                textDecoration: 'none',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '4px',
+              }}
+            >
+              + New group
+            </Link>
+          </div>
         </div>
 
         {groups.length === 0 ? (
           <div className="empty-state">
-            <p>No groups yet. Create one to start splitting bills.</p>
-            <Link
-              href="/group/new"
-              className="btn btn-primary"
-              style={{ marginTop: '20px', display: 'inline-flex' }}
-            >
-              Create a group
-            </Link>
+            <p>No groups yet. Create one or join an existing group to start splitting bills.</p>
+            <div style={{ marginTop: '20px', display: 'flex', gap: '12px', justifyContent: 'center', flexWrap: 'wrap' }}>
+              <Link
+                href="/group/new"
+                className="btn btn-primary"
+                style={{ display: 'inline-flex' }}
+              >
+                Create a group
+              </Link>
+              <button
+                type="button"
+                onClick={() => setIsJoinModalOpen(true)}
+                className="btn btn-ghost"
+                style={{ display: 'inline-flex' }}
+              >
+                Join a group
+              </button>
+            </div>
           </div>
         ) : (
           <div className="groups-grid">
@@ -122,6 +156,11 @@ export default function DashboardPage() {
         )}
 
         <FAB href={fabHref} />
+
+        <JoinGroupModal
+          isOpen={isJoinModalOpen}
+          onClose={() => setIsJoinModalOpen(false)}
+        />
       </main>
     </div>
   );

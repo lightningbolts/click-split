@@ -258,6 +258,13 @@ export default function NewGroupPage() {
               After creating the group, you can invite members by sharing the group link
               or adding expenses immediately.
             </p>
+
+            <div style={{ marginTop: '16px', paddingTop: '16px', borderTop: '1px solid #e5e0d4', textAlign: 'center' }}>
+              <span style={{ fontSize: '13px', color: 'var(--ink-soft)' }}>Have an invite link? </span>
+              <Link href="/group/join" style={{ fontSize: '13px', color: 'var(--green)', fontWeight: 700 }}>
+                Join existing group
+              </Link>
+            </div>
           </div>
         </div>
       </main>
