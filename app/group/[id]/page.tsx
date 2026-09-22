@@ -4,8 +4,11 @@ import { useEffect, useState, useCallback } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import { useAuth } from '@/lib/AuthContext';
+import { getSupabaseClient } from '@/lib/supabase/client';
 import Topbar from '@/components/Topbar';
 import ExpenseRow from '@/components/ExpenseRow';
+import ExpenseDetailModal from '@/components/ExpenseDetailModal';
+import GroupSettingsModal from '@/components/GroupSettingsModal';
 import { formatMoney } from '@/lib/balance';
 import { groupByDate } from '@/lib/dates';
 
@@ -31,25 +34,12 @@ interface Expense {
 }
 
 interface GroupDetail {
-  group: { id: string; name: string; icon: string | null };
+  group: { id: string; name: string; icon: string | null; created_by?: string };
   isMember?: boolean;
   memberCount?: number;
   members: Member[];
   expenses: Expense[];
   userBalance: number;
-}
-
-const EXPENSE_ICONS: Record<string, string> = {
-  groceries: '🛒', food: '🍕', electric: '💡', supplies: '🧻',
-  gas: '⛽', rent: '🏠', water: '💧', internet: '📶',
-};
-
-function guessIcon(description: string): string {
-  const lower = description.toLowerCase();
-  for (const [key, icon] of Object.entries(EXPENSE_ICONS)) {
-    if (lower.includes(key)) return icon;
-  }
-  return '💳';
 }
 
 export default function GroupDetailPage() {
@@ -61,6 +51,10 @@ export default function GroupDetailPage() {
   const [copied, setCopied] = useState(false);
   const [joining, setJoining] = useState(false);
   const [joinError, setJoinError] = useState<string | null>(null);
+
+  // Modals
+  const [selectedExpenseId, setSelectedExpenseId] = useState<string | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   const fetchGroup = useCallback(async () => {
     try {
@@ -85,12 +79,69 @@ export default function GroupDetailPage() {
     void fetchGroup();
   }, [user, authLoading, fetchGroup]);
 
+  // Supabase Realtime synchronization
+  useEffect(() => {
+    const supabase = getSupabaseClient();
+    if (!supabase || !groupId) return;
+
+    const channel = supabase
+      .channel(`group-realtime-${groupId}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'split_expenses', filter: `group_id=eq.${groupId}` },
+        () => { void fetchGroup(); },
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'split_settlements', filter: `group_id=eq.${groupId}` },
+        () => { void fetchGroup(); },
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'split_group_members', filter: `group_id=eq.${groupId}` },
+        () => { void fetchGroup(); },
+      )
+      .subscribe();
+
+    return () => {
+      void supabase.removeChannel(channel);
+    };
+  }, [groupId, fetchGroup]);
+
   const handleCopyLink = () => {
     if (typeof window !== 'undefined') {
       void navigator.clipboard.writeText(window.location.href);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     }
+  };
+
+  const handleExportCSV = () => {
+    if (!data?.expenses || data.expenses.length === 0) return;
+    const headers = ['Date', 'Description', 'Payer', 'Total Amount', 'Split Method', 'Your Share', 'Net Impact'];
+    const rows = data.expenses.map((e) => [
+      new Date(e.created_at).toLocaleDateString(),
+      `"${e.description.replace(/"/g, '""')}"`,
+      `"${e.payerName.replace(/"/g, '""')}"`,
+      e.total_amount.toFixed(2),
+      e.split_method,
+      e.userShare.toFixed(2),
+      e.userNet.toFixed(2),
+    ]);
+
+    const csvContent =
+      'data:text/csv;charset=utf-8,' +
+      [headers.join(','), ...rows.map((r) => r.join(','))].join('\n');
+    const encodedUri = encodeURI(csvContent);
+    const link = document.createElement('a');
+    link.setAttribute('href', encodedUri);
+    link.setAttribute(
+      'download',
+      `${data.group.name.toLowerCase().replace(/\s+/g, '-')}-expenses.csv`,
+    );
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
   };
 
   const handleJoin = async () => {
@@ -100,13 +151,14 @@ export default function GroupDetailPage() {
       const res = await fetch(`/api/split/groups/${groupId}/join`, {
         method: 'POST',
       });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.error || 'Failed to join group');
+      if (res.ok) {
+        await fetchGroup();
+      } else {
+        const d = await res.json();
+        setJoinError(d.error ?? 'Failed to join group');
       }
-      await fetchGroup();
-    } catch (err) {
-      setJoinError(err instanceof Error ? err.message : 'Failed to join');
+    } catch {
+      setJoinError('Network error joining group');
     } finally {
       setJoining(false);
     }
@@ -156,6 +208,7 @@ export default function GroupDetailPage() {
             )}
 
             <button
+              type="button"
               className="btn btn-primary btn-block"
               onClick={handleJoin}
               disabled={joining}
@@ -194,7 +247,40 @@ export default function GroupDetailPage() {
           {/* Left Sidebar (Sticky on Desktop) */}
           <aside className="group-sidebar">
             <div className="group-head">
-              <Link href="/dashboard" className="back">← All groups</Link>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+                <Link href="/dashboard" className="back" style={{ margin: 0 }}>← All groups</Link>
+                <button
+                  type="button"
+                  onClick={() => setSettingsOpen(true)}
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    cursor: 'pointer',
+                    padding: '4px',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    color: 'var(--ink)',
+                  }}
+                  title="Group Settings"
+                  aria-label="Group Settings"
+                >
+                  <svg
+                    width="18"
+                    height="18"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <circle cx="12" cy="12" r="3" />
+                    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
+                  </svg>
+                </button>
+              </div>
+
               <h1>{group.icon ? `${group.icon} ` : ''}{group.name}</h1>
               <p className="members">{memberNames}</p>
             </div>
@@ -235,7 +321,16 @@ export default function GroupDetailPage() {
                 className="btn btn-ghost btn-block"
                 style={{ fontSize: '13px' }}
               >
-                {copied ? '✓ Invite link copied' : '🔗 Copy invite link'}
+                {copied ? 'Invite link copied' : 'Copy invite link'}
+              </button>
+              <button
+                type="button"
+                onClick={handleExportCSV}
+                className="btn btn-ghost btn-block"
+                style={{ fontSize: '13px' }}
+                disabled={expenses.length === 0}
+              >
+                Export CSV
               </button>
             </div>
 
@@ -285,6 +380,9 @@ export default function GroupDetailPage() {
               <h2 style={{ fontSize: '14px', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
                 Expense Activity ({expenses.length})
               </h2>
+              <span style={{ fontSize: '12px', color: 'var(--grey)', fontWeight: 600 }}>
+                Click any expense to view details
+              </span>
             </div>
 
             {expenses.length === 0 ? (
@@ -305,11 +403,11 @@ export default function GroupDetailPage() {
                   {items.map((expense) => (
                     <ExpenseRow
                       key={expense.id}
-                      icon={guessIcon(expense.description)}
                       title={expense.description}
                       subtitle={`Paid by ${expense.paid_by === user?.id ? 'you' : expense.payerName} · split ${expense.memberCount} way${expense.memberCount !== 1 ? 's' : ''}`}
                       totalAmount={expense.total_amount}
                       userShare={expense.userNet}
+                      onClick={() => setSelectedExpenseId(expense.id)}
                     />
                   ))}
                 </div>
@@ -328,6 +426,34 @@ export default function GroupDetailPage() {
           Settle up
         </Link>
       </div>
+
+      {/* Expense Detail Modal */}
+      {selectedExpenseId && (
+        <ExpenseDetailModal
+          expenseId={selectedExpenseId}
+          members={members.map((m) => ({ userId: m.userId, name: m.name }))}
+          onClose={() => setSelectedExpenseId(null)}
+          onUpdated={() => {
+            void fetchGroup();
+          }}
+        />
+      )}
+
+      {/* Group Settings Modal */}
+      {settingsOpen && (
+        <GroupSettingsModal
+          groupId={groupId}
+          groupName={group.name}
+          groupIcon={group.icon}
+          members={members}
+          isCreator={group.created_by === user?.id}
+          currentUserId={user?.id ?? ''}
+          onClose={() => setSettingsOpen(false)}
+          onUpdated={() => {
+            void fetchGroup();
+          }}
+        />
+      )}
     </div>
   );
 }

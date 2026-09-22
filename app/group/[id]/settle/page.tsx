@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useMemo } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import { useAuth } from '@/lib/AuthContext';
@@ -8,10 +8,21 @@ import Topbar from '@/components/Topbar';
 import PaymentOption from '@/components/PaymentOption';
 import SettleConfirm from '@/components/SettleConfirm';
 import { formatMoney } from '@/lib/balance';
+import {
+  simplifyDebts,
+  SimplifiedTransaction,
+  roundToCent,
+} from '@/lib/debtSimplification';
+import {
+  PAYMENT_RAILS,
+  PaymentMethod,
+  launchPaymentRail,
+} from '@/lib/paymentIntegrations';
 
-interface MemberBalance {
+interface MemberData {
   userId: string;
   name: string;
+  image: string | null;
   balance: number;
 }
 
@@ -21,10 +32,14 @@ export default function SettleUpPage() {
   const { user, loading: authLoading } = useAuth();
 
   const [groupName, setGroupName] = useState('');
-  const [memberBalances, setMemberBalances] = useState<MemberBalance[]>([]);
-  const [selectedMember, setSelectedMember] = useState<MemberBalance | null>(null);
+  const [members, setMembers] = useState<MemberData[]>([]);
+  const [selectedTx, setSelectedTx] = useState<SimplifiedTransaction | null>(null);
+  const [activeRail, setActiveRail] = useState<PaymentMethod | null>(null);
+  const [handleInput, setHandleInput] = useState('');
   const [settled, setSettled] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [settling, setSettling] = useState(false);
+  const [viewAllGroupDebts, setViewAllGroupDebts] = useState(false);
 
   useEffect(() => {
     if (authLoading || !user) return;
@@ -35,28 +50,7 @@ export default function SettleUpPage() {
         if (res.ok) {
           const data = await res.json();
           setGroupName(data.group.name);
-
-          // Find members who owe/are owed by the current user
-          // We need pairwise balances - for now, approximate from the global balance
-          const otherMembers = (data.members ?? [])
-            .filter((m: MemberBalance) => m.userId !== user.id)
-            .map((m: MemberBalance) => ({
-              ...m,
-              // The balance from the API is that member's own net balance in the group.
-              // A negative balance for them can mean they owe money overall.
-              // For the settle-up view we need pairwise - this is an approximation.
-              balance: -m.balance, // If they're negative, they owe the group
-            }));
-
-          setMemberBalances(otherMembers);
-
-          // Auto-select the first member who owes
-          const owesUser = otherMembers.find((m: MemberBalance) => m.balance > 0);
-          if (owesUser) {
-            setSelectedMember(owesUser);
-          } else if (otherMembers.length > 0) {
-            setSelectedMember(otherMembers[0]);
-          }
+          setMembers(data.members ?? []);
         }
       } catch (err) {
         console.error('Failed to fetch group for settle up:', err);
@@ -68,25 +62,88 @@ export default function SettleUpPage() {
     void fetchData();
   }, [groupId, user, authLoading]);
 
-  const handleSettle = async (method: string) => {
-    if (!selectedMember || !user) return;
+  // Compute N-party minimum cash flow transactions
+  const allTransactions = useMemo(() => {
+    if (members.length === 0) return [];
+    return simplifyDebts(
+      members.map((m) => ({
+        userId: m.userId,
+        name: m.name,
+        balance: m.balance,
+      })),
+    );
+  }, [members]);
 
-    const amount = Math.abs(selectedMember.balance);
-    if (amount <= 0) return;
+  // User's direct obligations
+  const userToPay = useMemo(() => {
+    if (!user) return [];
+    return allTransactions.filter((t) => t.fromUserId === user.id);
+  }, [allTransactions, user]);
 
-    // Determine direction: who pays whom
-    const fromUser = selectedMember.balance > 0 ? selectedMember.userId : user.id;
-    const toUser = selectedMember.balance > 0 ? user.id : selectedMember.userId;
+  const userToReceive = useMemo(() => {
+    if (!user) return [];
+    return allTransactions.filter((t) => t.toUserId === user.id);
+  }, [allTransactions, user]);
 
-    if (method === 'venmo') {
-      // Open Venmo deep link
-      window.open(`https://venmo.com/?txn=pay&amount=${amount.toFixed(2)}`, '_blank');
-    } else if (method === 'zelle') {
-      // Open Zelle - no universal deep link, open web
-      window.open('https://www.zellepay.com/send-money', '_blank');
+  const otherTransactions = useMemo(() => {
+    if (!user) return [];
+    return allTransactions.filter((t) => t.fromUserId !== user.id && t.toUserId !== user.id);
+  }, [allTransactions, user]);
+
+  // Select initial transaction
+  useEffect(() => {
+    if (!selectedTx) {
+      if (userToPay.length > 0) {
+        setSelectedTx(userToPay[0]);
+      } else if (userToReceive.length > 0) {
+        setSelectedTx(userToReceive[0]);
+      } else if (allTransactions.length > 0) {
+        setSelectedTx(allTransactions[0]);
+      }
+    }
+  }, [selectedTx, userToPay, userToReceive, allTransactions]);
+
+  // Load saved handle for selected recipient when active rail changes
+  useEffect(() => {
+    if (selectedTx && activeRail && activeRail !== 'cash') {
+      const recipientId = selectedTx.toUserId;
+      const key = `click_split_${recipientId}_${activeRail}`;
+      const saved = typeof window !== 'undefined' ? localStorage.getItem(key) : null;
+      if (saved) {
+        setHandleInput(saved);
+      } else {
+        setHandleInput('');
+      }
+    }
+  }, [selectedTx, activeRail]);
+
+  const handleSettle = async (method: PaymentMethod) => {
+    if (!selectedTx || !user) return;
+
+    setSettling(true);
+    const amount = selectedTx.amount;
+    const fromUser = selectedTx.fromUserId;
+    const toUser = selectedTx.toUserId;
+
+    // Save handle if provided
+    if (handleInput.trim() && method !== 'cash') {
+      try {
+        localStorage.setItem(`click_split_${toUser}_${method}`, handleInput.trim());
+      } catch {}
     }
 
-    // Record the settlement
+    // Launch rail
+    if (method !== 'cash') {
+      await launchPaymentRail({
+        method,
+        recipientHandle: handleInput.trim() || undefined,
+        amount,
+        groupName,
+        recipientName: selectedTx.toName,
+      });
+    }
+
+    // Record settlement in Supabase
     try {
       const res = await fetch('/api/split/settlements', {
         method: 'POST',
@@ -102,12 +159,20 @@ export default function SettleUpPage() {
 
       if (res.ok) {
         setSettled(true);
+        // Refresh members
+        const refreshed = await fetch(`/api/split/groups/${groupId}`);
+        if (refreshed.ok) {
+          const d = await refreshed.json();
+          setMembers(d.members ?? []);
+        }
       } else {
         const errData = await res.json().catch(() => ({}));
         console.error('Settlement error:', errData);
       }
     } catch (err) {
       console.error('Settlement error:', err);
+    } finally {
+      setSettling(false);
     }
   };
 
@@ -120,7 +185,7 @@ export default function SettleUpPage() {
     );
   }
 
-  if (!selectedMember) {
+  if (allTransactions.length === 0) {
     return (
       <div style={{ width: '100%', minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
         <Topbar />
@@ -130,7 +195,7 @@ export default function SettleUpPage() {
               <Link href={`/group/${groupId}`} className="back">← {groupName}</Link>
             </div>
             <div className="empty-state">
-              <p>Everyone is settled up! 🎉</p>
+              <p>Everyone is settled up! All balances are $0.00</p>
               <Link href={`/group/${groupId}`} className="btn btn-primary" style={{ marginTop: '16px', display: 'inline-flex' }}>
                 Back to group
               </Link>
@@ -141,11 +206,14 @@ export default function SettleUpPage() {
     );
   }
 
-  const amount = Math.abs(selectedMember.balance);
-  const owesUser = selectedMember.balance > 0;
-  const stampText = owesUser
-    ? `${selectedMember.name.toUpperCase()} OWES YOU`
-    : `YOU OWE ${selectedMember.name.toUpperCase()}`;
+  const isCurrentUserPaying = selectedTx?.fromUserId === user?.id;
+  const isCurrentUserReceiving = selectedTx?.toUserId === user?.id;
+
+  const stampText = isCurrentUserPaying
+    ? `YOU OWE ${selectedTx?.toName.toUpperCase()}`
+    : isCurrentUserReceiving
+    ? `${selectedTx?.fromName.toUpperCase()} OWES YOU`
+    : `${selectedTx?.fromName.toUpperCase()} PAYS ${selectedTx?.toName.toUpperCase()}`;
 
   return (
     <div style={{ width: '100%', minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
@@ -157,53 +225,241 @@ export default function SettleUpPage() {
             <Link href={`/group/${groupId}`} className="back">← {groupName}</Link>
           </div>
 
-          <div className="settle-hero">
-            <div className={`stamp ${settled ? 'settled' : ''}`}>{stampText}</div>
-            <div className="amount tabular">{formatMoney(amount)}</div>
-            <p>
-              Settle this and {selectedMember.name}&apos;s balance with you goes to $0.00
-            </p>
-          </div>
-
-          {!settled && (
-            <div style={{ paddingBottom: '24px' }}>
-              {memberBalances.length > 1 && (
-                <div className="section-head" style={{ padding: '16px 24px 8px' }}>
-                  <h2>Settle with</h2>
-                </div>
-              )}
-              {memberBalances.length > 1 &&
-                memberBalances.map((m) => (
-                  <button
-                    key={m.userId}
-                    className="pay-opt"
-                    onClick={() => { setSelectedMember(m); setSettled(false); }}
-                    style={m.userId === selectedMember.userId ? { background: 'var(--paper-dim)' } : undefined}
-                  >
-                    <div className="p-name">
-                      <span className="p-icon">{m.name[0]}</span>
-                      {m.name} · {formatMoney(Math.abs(m.balance))}
-                    </div>
-                    <span className="arrow">→</span>
-                  </button>
-                ))
-              }
-
-              <div className="section-head" style={{ padding: '16px 24px 8px' }}>
-                <h2>Mark as paid via</h2>
-              </div>
-              <PaymentOption icon="$" label="Venmo" onClick={() => handleSettle('venmo')} />
-              <PaymentOption icon="Z" label="Zelle" onClick={() => handleSettle('zelle')} />
-              <PaymentOption icon="✓" label="Cash / already paid" onClick={() => handleSettle('cash')} />
+          {selectedTx && (
+            <div className="settle-hero">
+              <div className={`stamp ${settled ? 'settled' : ''}`}>{stampText}</div>
+              <div className="amount tabular">{formatMoney(selectedTx.amount)}</div>
+              <p>
+                {isCurrentUserPaying
+                  ? `Pay ${selectedTx.toName} to reduce your group debt.`
+                  : isCurrentUserReceiving
+                  ? `${selectedTx.fromName} owes you this amount.`
+                  : `Group settlement between ${selectedTx.fromName} and ${selectedTx.toName}.`}
+              </p>
             </div>
           )}
 
-          {settled && (
+          {!settled && selectedTx && (
+            <div style={{ paddingBottom: '24px' }}>
+              {/* N-Party Transfer Selector */}
+              <div style={{ padding: '0 24px 16px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                  <span style={{ fontSize: '13px', fontWeight: 800 }}>Choose payment to settle:</span>
+                  {otherTransactions.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setViewAllGroupDebts((v) => !v)}
+                      style={{
+                        background: 'none',
+                        border: 'none',
+                        color: 'var(--green)',
+                        fontSize: '12px',
+                        fontWeight: 800,
+                        cursor: 'pointer',
+                      }}
+                    >
+                      {viewAllGroupDebts ? 'Show only mine' : `All group debts (${allTransactions.length})`}
+                    </button>
+                  )}
+                </div>
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  {userToPay.map((tx) => (
+                    <button
+                      key={tx.id}
+                      type="button"
+                      className="pay-opt"
+                      onClick={() => { setSelectedTx(tx); setActiveRail(null); }}
+                      style={{
+                        border: tx.id === selectedTx.id ? '2px solid var(--ink)' : '1px solid var(--paper-dim)',
+                        background: tx.id === selectedTx.id ? 'var(--green-dim)' : 'var(--white)',
+                      }}
+                    >
+                      <div className="p-name">
+                        <span className="p-icon" style={{ fontWeight: 800 }}>→</span>
+                        <span>You pay <strong>{tx.toName}</strong></span>
+                      </div>
+                      <span className="tabular" style={{ fontWeight: 800 }}>{formatMoney(tx.amount)}</span>
+                    </button>
+                  ))}
+
+                  {userToReceive.map((tx) => (
+                    <button
+                      key={tx.id}
+                      type="button"
+                      className="pay-opt"
+                      onClick={() => { setSelectedTx(tx); setActiveRail(null); }}
+                      style={{
+                        border: tx.id === selectedTx.id ? '2px solid var(--ink)' : '1px solid var(--paper-dim)',
+                        background: tx.id === selectedTx.id ? 'var(--green-dim)' : 'var(--white)',
+                      }}
+                    >
+                      <div className="p-name">
+                        <span className="p-icon" style={{ fontWeight: 800 }}>←</span>
+                        <span><strong>{tx.fromName}</strong> pays you</span>
+                      </div>
+                      <span className="tabular" style={{ fontWeight: 800 }}>{formatMoney(tx.amount)}</span>
+                    </button>
+                  ))}
+
+                  {viewAllGroupDebts &&
+                    otherTransactions.map((tx) => (
+                      <button
+                        key={tx.id}
+                        type="button"
+                        className="pay-opt"
+                        onClick={() => { setSelectedTx(tx); setActiveRail(null); }}
+                        style={{
+                          border: tx.id === selectedTx.id ? '2px solid var(--ink)' : '1px solid var(--paper-dim)',
+                          background: tx.id === selectedTx.id ? 'var(--paper-dim)' : 'var(--white)',
+                        }}
+                      >
+                        <div className="p-name">
+                          <span className="p-icon" style={{ fontWeight: 800 }}>•</span>
+                          <span>{tx.fromName} pays <strong>{tx.toName}</strong></span>
+                        </div>
+                        <span className="tabular" style={{ fontWeight: 800 }}>{formatMoney(tx.amount)}</span>
+                      </button>
+                    ))}
+                </div>
+              </div>
+
+              {/* Payment Rails Section */}
+              <div className="section-head" style={{ padding: '12px 24px 8px' }}>
+                <h2>Select Payment Method</h2>
+              </div>
+
+              {/* Recipient Handle Prompt if active rail requires it */}
+              {activeRail && activeRail !== 'cash' && (
+                <div
+                  style={{
+                    margin: '0 24px 16px',
+                    padding: '12px',
+                    background: 'var(--paper-dim)',
+                    border: '2px solid var(--ink)',
+                    borderRadius: '2px',
+                  }}
+                >
+                  <label
+                    style={{
+                      display: 'block',
+                      fontSize: '12px',
+                      fontWeight: 800,
+                      marginBottom: '6px',
+                    }}
+                  >
+                    {PAYMENT_RAILS[activeRail].handleLabel} for {selectedTx.toName}:
+                  </label>
+                  <div style={{ display: 'flex', gap: '8px' }}>
+                    <input
+                      type="text"
+                      value={handleInput}
+                      onChange={(e) => setHandleInput(e.target.value)}
+                      placeholder={PAYMENT_RAILS[activeRail].handlePlaceholder}
+                      style={{
+                        flex: 1,
+                        padding: '8px 10px',
+                        border: '1.5px solid var(--ink)',
+                        fontSize: '13px',
+                        borderRadius: '2px',
+                      }}
+                    />
+                    <button
+                      type="button"
+                      className="btn btn-primary btn-small"
+                      disabled={settling}
+                      onClick={() => void handleSettle(activeRail)}
+                    >
+                      {settling ? 'Launching…' : `Pay & Record`}
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* 5-Way Payment Rails */}
+              <div style={{ padding: '0 24px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                <PaymentOption
+                  icon="V"
+                  label="Venmo"
+                  subtitle="Open Venmo app / web with note pre-filled"
+                  badgeColor="#008CFF"
+                  onClick={() => {
+                    setActiveRail('venmo');
+                    if (handleInput) void handleSettle('venmo');
+                  }}
+                />
+                <PaymentOption
+                  icon="P"
+                  label="PayPal"
+                  subtitle="Instant transfer via PayPal.Me"
+                  badgeColor="#003087"
+                  onClick={() => {
+                    setActiveRail('paypal');
+                    if (handleInput) void handleSettle('paypal');
+                  }}
+                />
+                <PaymentOption
+                  icon="$"
+                  label="Cash App"
+                  subtitle="Pay directly with $Cashtag"
+                  badgeColor="#00D632"
+                  onClick={() => {
+                    setActiveRail('cashapp');
+                    if (handleInput) void handleSettle('cashapp');
+                  }}
+                />
+                <PaymentOption
+                  icon="Z"
+                  label="Zelle"
+                  subtitle="Bank-to-bank direct transfer"
+                  badgeColor="#7414CA"
+                  onClick={() => {
+                    setActiveRail('zelle');
+                    if (handleInput) void handleSettle('zelle');
+                  }}
+                />
+                <PaymentOption
+                  icon="A"
+                  label="Apple Pay / Cash"
+                  subtitle="Apple Cash message or native payment sheet"
+                  badgeColor="#000000"
+                  onClick={() => void handleSettle('applepay')}
+                />
+                <PaymentOption
+                  icon="G"
+                  label="Google Pay"
+                  subtitle="Google Wallet & Web transfer"
+                  badgeColor="#4285F4"
+                  onClick={() => void handleSettle('googlepay')}
+                />
+                <PaymentOption
+                  icon="✓"
+                  label="Cash / Marked as Paid"
+                  subtitle="Record settlement directly without opening external apps"
+                  onClick={() => void handleSettle('cash')}
+                />
+              </div>
+            </div>
+          )}
+
+          {settled && selectedTx && (
             <div style={{ paddingBottom: '24px' }}>
               <SettleConfirm
-                counterpartyName={selectedMember.name}
+                counterpartyName={selectedTx.toName}
                 groupName={groupName}
               />
+              <div style={{ display: 'flex', justifyContent: 'center', marginTop: '16px' }}>
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={() => {
+                    setSettled(false);
+                    setSelectedTx(null);
+                  }}
+                >
+                  Settle another
+                </button>
+              </div>
             </div>
           )}
         </div>

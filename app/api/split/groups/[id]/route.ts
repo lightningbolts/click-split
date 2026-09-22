@@ -180,3 +180,88 @@ export async function GET(
     userBalance,
   });
 }
+
+/**
+ * PATCH /api/split/groups/[id]
+ * Updates group name and icon.
+ */
+export async function PATCH(
+  request: Request,
+  { params }: { params: Promise<{ id: string }> },
+) {
+  const { id } = await params;
+  const supabase = await createSupabaseServerClient();
+  const { data: { user }, error: authError } = await supabase.auth.getUser();
+  if (authError || !user) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
+  // Verify user is group member
+  const { data: member } = await supabase
+    .from('split_group_members')
+    .select('user_id')
+    .eq('group_id', id)
+    .eq('user_id', user.id)
+    .maybeSingle();
+
+  if (!member) {
+    return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+  }
+
+  const body = (await request.json()) as { name?: string; icon?: string };
+  const updates: Record<string, string> = {};
+  if (body.name?.trim()) updates.name = body.name.trim();
+  if (body.icon) updates.icon = body.icon;
+
+  const { error: updateError } = await supabase
+    .from('split_groups')
+    .update(updates)
+    .eq('id', id);
+
+  if (updateError) {
+    return NextResponse.json({ error: updateError.message }, { status: 500 });
+  }
+
+  return NextResponse.json({ success: true });
+}
+
+/**
+ * DELETE /api/split/groups/[id]
+ * Deletes group (only creator can delete, and only if settled).
+ */
+export async function DELETE(
+  _request: Request,
+  { params }: { params: Promise<{ id: string }> },
+) {
+  const { id } = await params;
+  const supabase = await createSupabaseServerClient();
+  const { data: { user }, error: authError } = await supabase.auth.getUser();
+  if (authError || !user) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
+  const { data: group } = await supabase
+    .from('split_groups')
+    .select('created_by')
+    .eq('id', id)
+    .single();
+
+  if (!group) {
+    return NextResponse.json({ error: 'Group not found' }, { status: 404 });
+  }
+
+  if (group.created_by !== user.id) {
+    return NextResponse.json({ error: 'Only the group creator can delete this group' }, { status: 403 });
+  }
+
+  const { error: delError } = await supabase
+    .from('split_groups')
+    .delete()
+    .eq('id', id);
+
+  if (delError) {
+    return NextResponse.json({ error: delError.message }, { status: 500 });
+  }
+
+  return NextResponse.json({ success: true });
+}
