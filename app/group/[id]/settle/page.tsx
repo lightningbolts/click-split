@@ -11,7 +11,6 @@ import { formatMoney } from '@/lib/balance';
 import {
   simplifyDebts,
   SimplifiedTransaction,
-  roundToCent,
 } from '@/lib/debtSimplification';
 import {
   PAYMENT_RAILS,
@@ -287,7 +286,7 @@ export default function SettleUpPage() {
                       key={tx.id}
                       type="button"
                       className="pay-opt"
-                      onClick={() => { setSelectedTx(tx); setActiveRail(null); }}
+                      onClick={() => { setSelectedTx(tx); setActiveRail(null); setPendingMethod(null); setPaymentInstructions(null); }}
                       style={{
                         border: tx.id === selectedTx.id ? '2px solid var(--ink)' : '1px solid var(--paper-dim)',
                         background: tx.id === selectedTx.id ? 'var(--green-dim)' : 'var(--white)',
@@ -408,54 +407,42 @@ export default function SettleUpPage() {
                   label="Venmo"
                   subtitle="Open Venmo app / web with note pre-filled"
                   badgeColor="#008CFF"
-                  onClick={() => {
-                    setActiveRail('venmo');
-                    if (handleInput) void handlePaymentMethod('venmo');
-                  }}
+                  onClick={() => { setActiveRail('venmo'); setPendingMethod(null); }}
                 />
                 <PaymentOption
                   icon="P"
                   label="PayPal"
                   subtitle="Instant transfer via PayPal.Me"
                   badgeColor="#003087"
-                  onClick={() => {
-                    setActiveRail('paypal');
-                    if (handleInput) void handlePaymentMethod('paypal');
-                  }}
+                  onClick={() => { setActiveRail('paypal'); setPendingMethod(null); }}
                 />
                 <PaymentOption
                   icon="$"
                   label="Cash App"
                   subtitle="Pay directly with $Cashtag"
                   badgeColor="#00D632"
-                  onClick={() => {
-                    setActiveRail('cashapp');
-                    if (handleInput) void handlePaymentMethod('cashapp');
-                  }}
+                  onClick={() => { setActiveRail('cashapp'); setPendingMethod(null); }}
                 />
                 <PaymentOption
                   icon="Z"
                   label="Zelle"
                   subtitle="Bank-to-bank direct transfer"
                   badgeColor="#7414CA"
-                  onClick={() => {
-                    setActiveRail('zelle');
-                    if (handleInput) void handlePaymentMethod('zelle');
-                  }}
+                  onClick={() => { setActiveRail('zelle'); setPendingMethod(null); }}
                 />
                 <PaymentOption
                   icon="A"
                   label="Apple Pay / Cash"
                   subtitle="Apple Cash message or native payment sheet"
                   badgeColor="#000000"
-                  onClick={() => void handlePaymentMethod('applepay')}
+                  onClick={() => { setActiveRail('applepay'); setPendingMethod(null); }}
                 />
                 <PaymentOption
                   icon="G"
                   label="Google Pay"
                   subtitle="Google Wallet & Web transfer"
                   badgeColor="#4285F4"
-                  onClick={() => void handlePaymentMethod('googlepay')}
+                  onClick={() => { setActiveRail('googlepay'); setPendingMethod(null); }}
                 />
                 <PaymentOption
                   icon="✓"
