@@ -15,6 +15,59 @@ interface Member {
   image: string | null;
 }
 
+const MAX_RECEIPT_IMAGES = 10;
+const RECEIPT_MAX_DIMENSION = 1600;
+const RECEIPT_JPEG_QUALITY = 0.65;
+
+function blobToDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(reader.error ?? new Error('Failed to read receipt image'));
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function compressReceiptImage(file: File): Promise<string> {
+  const objectUrl = URL.createObjectURL(file);
+
+  try {
+    const image = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const element = new Image();
+      element.onload = () => resolve(element);
+      element.onerror = () => reject(new Error(`Could not decode ${file.name || 'receipt image'}`));
+      element.src = objectUrl;
+    });
+
+    const largestDimension = Math.max(image.naturalWidth, image.naturalHeight);
+    const scale = largestDimension > RECEIPT_MAX_DIMENSION
+      ? RECEIPT_MAX_DIMENSION / largestDimension
+      : 1;
+    const width = Math.max(1, Math.round(image.naturalWidth * scale));
+    const height = Math.max(1, Math.round(image.naturalHeight * scale));
+
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext('2d');
+    if (!context) throw new Error('Could not prepare receipt image');
+
+    context.drawImage(image, 0, 0, width, height);
+
+    const blob = await new Promise<Blob>((resolve, reject) => {
+      canvas.toBlob(
+        (value) => value ? resolve(value) : reject(new Error('Could not compress receipt image')),
+        'image/jpeg',
+        RECEIPT_JPEG_QUALITY,
+      );
+    });
+
+    return await blobToDataUrl(blob);
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
+}
+
 export default function AddExpensePage() {
   const params = useParams();
   const router = useRouter();
@@ -28,6 +81,8 @@ export default function AddExpensePage() {
   const [splitMethod, setSplitMethod] = useState<'even' | 'by_item' | 'custom_percent'>('even');
   const [scannedItems, setScannedItems] = useState<ScannedItem[]>([]);
   const [receiptImageUrl, setReceiptImageUrl] = useState<string | null>(null);
+  const [hasReceiptScan, setHasReceiptScan] = useState(false);
+  const [receiptImageCount, setReceiptImageCount] = useState(0);
 
   // Tax & Tip
   const [taxInput, setTaxInput] = useState<string>('0');
@@ -39,6 +94,7 @@ export default function AddExpensePage() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const cameraInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (authLoading || !user) return;
@@ -79,24 +135,31 @@ export default function AddExpensePage() {
     void fetchMembers();
   }, [groupId, user, authLoading, paidBy]);
 
-  const handleScan = useCallback(async (file: File) => {
+  const handleScan = useCallback(async (files: File[]) => {
+    if (files.length === 0) return;
+    if (files.length > MAX_RECEIPT_IMAGES) {
+      setError(`Select no more than ${MAX_RECEIPT_IMAGES} receipt photos.`);
+      return;
+    }
+
     setScanning(true);
     setError(null);
 
     try {
-      const reader = new FileReader();
-      const base64 = await new Promise<string>((resolve, reject) => {
-        reader.onload = () => resolve(reader.result as string);
-        reader.onerror = reject;
-        reader.readAsDataURL(file);
-      });
+      const images: string[] = [];
+      for (const file of files) {
+        images.push(await compressReceiptImage(file));
+      }
 
-      // 1. Upload receipt to permanent Supabase Storage
+      setReceiptImageCount(images.length);
+
+      // Archive the first image as the representative receipt image. The OCR
+      // request still receives every ordered image.
       try {
         const uploadRes = await fetch('/api/split/receipt-upload', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ image: base64 }),
+          body: JSON.stringify({ image: images[0] }),
         });
         if (uploadRes.ok) {
           const uploadData = await uploadRes.json();
@@ -108,11 +171,10 @@ export default function AddExpensePage() {
         console.warn('Storage upload fallback warning:', uploadErr);
       }
 
-      // 2. Scan OCR items
       const res = await fetch('/api/split/receipt-scan', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ image: base64 }),
+        body: JSON.stringify(images.length === 1 ? { image: images[0] } : { images }),
       });
 
       if (!res.ok) {
@@ -130,18 +192,29 @@ export default function AddExpensePage() {
         }),
       );
 
+      setHasReceiptScan(true);
       setScannedItems(items);
-      setSplitMethod('by_item');
-      const detected = Number(data.detected_total ?? items.reduce((s: number, i: ScannedItem) => s + i.price, 0));
-      setTotalAmount(detected.toFixed(2));
+      if (items.length > 0) setSplitMethod('by_item');
 
-      if (data.tax && (!taxInput || taxInput === '0')) {
+      const detected = Number(
+        data.detected_total ?? items.reduce((sum: number, item: ScannedItem) => sum + item.price, 0),
+      );
+      if (Number.isFinite(detected) && detected > 0) {
+        setTotalAmount(detected.toFixed(2));
+      }
+
+      if (Number(data.tax) > 0 && (!taxInput || taxInput === '0')) {
         setTaxInput(Number(data.tax).toFixed(2));
+      }
+
+      if (Number(data.tip) > 0) {
+        setCustomTip(Number(data.tip).toFixed(2));
+        setTipPreset(0);
       }
 
       if (data.merchant) {
         setDescription(data.merchant);
-      } else if (!description && items.length > 0) {
+      } else if (!description && (items.length > 0 || detected > 0)) {
         setDescription('Scanned receipt');
       }
     } catch (err) {
@@ -149,11 +222,18 @@ export default function AddExpensePage() {
     } finally {
       setScanning(false);
     }
-  }, [description]);
+  }, [description, taxInput]);
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) void handleScan(file);
+  const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.target.files ?? []);
+    event.target.value = '';
+    if (files.length > 0) void handleScan(files);
+  };
+
+  const handleCameraFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (file) void handleScan([file]);
   };
 
   // Recalculate total if items + tax + tip are modified
@@ -219,7 +299,7 @@ export default function AddExpensePage() {
         totalAmount: parseFloat(totalAmount),
         paidBy,
         splitMethod,
-        source: scannedItems.length > 0 ? 'receipt_scan' : 'manual',
+        source: hasReceiptScan ? 'receipt_scan' : 'manual',
         receiptImageUrl: receiptImageUrl ?? undefined,
         items: finalItems.length > 0 ? finalItems : undefined,
         customPercentages: splitMethod === 'custom_percent'
@@ -285,27 +365,52 @@ export default function AddExpensePage() {
                 </svg>
               </div>
               <h3>Scan a receipt</h3>
-              <p>Photograph it and Click Split pulls out every item and price for you.</p>
+              <p>Use one photo, or select up to 10 ordered photos for a long receipt. Slight overlap between adjacent photos is fine.</p>
+              <input
+                ref={cameraInputRef}
+                type="file"
+                accept="image/*"
+                capture="environment"
+                onChange={handleCameraFileChange}
+                style={{ display: 'none' }}
+              />
               <input
                 ref={fileInputRef}
                 type="file"
                 accept="image/*"
-                capture="environment"
+                multiple
                 onChange={handleFileChange}
                 style={{ display: 'none' }}
               />
-              <button
-                type="button"
-                className="btn btn-primary"
-                onClick={() => fileInputRef.current?.click()}
-                disabled={scanning}
-              >
-                {scanning ? 'Scanning & saving photo…' : 'Take photo'}
-              </button>
+
+              <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', justifyContent: 'center' }}>
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={() => cameraInputRef.current?.click()}
+                  disabled={scanning}
+                >
+                  {scanning ? 'Analyzing receipt…' : 'Take photo'}
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-ghost"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={scanning}
+                >
+                  Choose up to 10 photos
+                </button>
+              </div>
+
+              {receiptImageCount > 0 && (
+                <div style={{ marginTop: '10px', fontSize: '12px', color: 'var(--ink-soft)', fontWeight: 700 }}>
+                  {receiptImageCount} photo{receiptImageCount === 1 ? '' : 's'} analyzed as one receipt
+                </div>
+              )}
 
               {receiptImageUrl && (
-                <div style={{ marginTop: '10px', fontSize: '12px', color: 'var(--green)', fontWeight: 800 }}>
-                  ✓ Receipt photo archived to cloud
+                <div style={{ marginTop: '6px', fontSize: '12px', color: 'var(--green)', fontWeight: 800 }}>
+                  Primary receipt photo archived to cloud
                 </div>
               )}
             </div>
