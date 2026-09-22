@@ -56,7 +56,7 @@ export default function ExpenseDetailModal({
   useEffect(() => {
     const fetchDetail = async () => {
       try {
-        const res = await fetch(`/api/split/expenses/${expenseId}`);
+        const res = await fetch(`/api/split/expenses/${expenseId}`, { cache: 'no-store' });
         if (res.ok) {
           const data = await res.json();
           setExpense(data.expense);
@@ -129,10 +129,17 @@ export default function ExpenseDetailModal({
       if (res.ok) {
         setEditing(false);
         onUpdated();
-        // Refresh detail
-        const data = await (await fetch(`/api/split/expenses/${expenseId}`)).json();
-        setExpense(data.expense);
-        setShares(data.shares ?? []);
+        // Refresh detail, including line items that may have changed.
+        const detailRes = await fetch(`/api/split/expenses/${expenseId}`, { cache: 'no-store' });
+        if (detailRes.ok) {
+          const data = await detailRes.json();
+          setExpense(data.expense);
+          setItems(data.items ?? []);
+          setShares(data.shares ?? []);
+          setEditDesc(data.expense.description);
+          setEditAmount(String(data.expense.total_amount));
+          setEditPayer(data.expense.paid_by);
+        }
       } else {
         alert('Failed to update expense');
       }
@@ -141,6 +148,28 @@ export default function ExpenseDetailModal({
     } finally {
       setSaving(false);
     }
+  };
+
+  const updateItem = (index: number, patch: Partial<ExpenseItem>) => {
+    setItems((current) =>
+      current.map((item, itemIndex) => (itemIndex === index ? { ...item, ...patch } : item)),
+    );
+  };
+
+  const removeItem = (index: number) => {
+    setItems((current) => current.filter((_, itemIndex) => itemIndex !== index));
+  };
+
+  const addItem = () => {
+    setItems((current) => [
+      ...current,
+      {
+        id: `draft-${crypto.randomUUID()}`,
+        label: '',
+        price: 0,
+        assigned_to: null,
+      },
+    ]);
   };
 
   const payerName = members.find((m) => m.userId === expense?.paid_by)?.name ?? 'Unknown';
@@ -231,6 +260,90 @@ export default function ExpenseDetailModal({
                     ))}
                   </select>
                 </div>
+                <div className="field" style={{ margin: 0 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px', marginBottom: '8px' }}>
+                    <label style={{ margin: 0 }}>Receipt / line items</label>
+                    <button type="button" className="btn btn-small" onClick={addItem}>
+                      + Add item
+                    </button>
+                  </div>
+
+                  {items.length === 0 ? (
+                    <p style={{ margin: 0, color: 'var(--ink-soft)', fontSize: '12px' }}>
+                      No saved line items. Add them here to restore an itemized receipt.
+                    </p>
+                  ) : (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                      {items.map((item, index) => (
+                        <div
+                          key={item.id}
+                          style={{
+                            border: '1.5px solid var(--ink)',
+                            background: 'var(--paper-dim)',
+                            padding: '10px',
+                            display: 'grid',
+                            gridTemplateColumns: 'minmax(0, 1fr) 92px auto',
+                            gap: '8px',
+                            alignItems: 'center',
+                          }}
+                        >
+                          <input
+                            type="text"
+                            value={item.label}
+                            placeholder="Item description"
+                            onChange={(event) => updateItem(index, { label: event.target.value })}
+                            aria-label={`Line item ${index + 1} description`}
+                          />
+                          <input
+                            type="number"
+                            step="0.01"
+                            min="0"
+                            value={Number.isFinite(Number(item.price)) ? item.price : 0}
+                            onChange={(event) =>
+                              updateItem(index, { price: Number.parseFloat(event.target.value) || 0 })
+                            }
+                            aria-label={`Line item ${index + 1} price`}
+                          />
+                          <button
+                            type="button"
+                            className="btn btn-small"
+                            onClick={() => removeItem(index)}
+                            aria-label={`Remove line item ${index + 1}`}
+                          >
+                            ×
+                          </button>
+
+                          <select
+                            value={item.assigned_to ?? ''}
+                            onChange={(event) =>
+                              updateItem(index, { assigned_to: event.target.value || null })
+                            }
+                            aria-label={`Line item ${index + 1} assignee`}
+                            style={{
+                              gridColumn: '1 / -1',
+                              width: '100%',
+                              padding: '9px',
+                              border: '1.5px solid var(--ink)',
+                              borderRadius: 'var(--radius)',
+                              fontFamily: 'inherit',
+                              fontWeight: 700,
+                              background: 'var(--paper)',
+                              color: 'var(--ink)',
+                            }}
+                          >
+                            <option value="">Split evenly</option>
+                            {members.map((member) => (
+                              <option key={member.userId} value={member.userId}>
+                                {member.name}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
                 <div style={{ display: 'flex', gap: '8px', marginTop: '10px' }}>
                   <button
                     type="button"
