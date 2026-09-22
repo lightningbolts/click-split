@@ -133,6 +133,20 @@ export default async function LandingPage() {
           </section>
         </div>
       </main>
+
+      <footer style={{ borderTop: 'var(--border)', background: 'var(--paper-dim)', padding: '24px 20px', marginTop: 'auto' }}>
+        <div className="page-container" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '16px', padding: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '14px', fontWeight: 800 }}>
+            <span className="mark" style={{ width: '18px', height: '18px' }} />
+            Click Split · Click Platforms
+          </div>
+          <div style={{ display: 'flex', gap: '20px', fontSize: '13px', fontWeight: 700, color: 'var(--ink-soft)' }}>
+            <Link href="/privacy" style={{ textDecoration: 'none' }}>Privacy Policy</Link>
+            <Link href="/terms" style={{ textDecoration: 'none' }}>Terms of Service</Link>
+            <Link href="/support" style={{ textDecoration: 'none' }}>Support</Link>
+          </div>
+        </div>
+      </footer>
     </div>
   );
 }
