@@ -43,6 +43,8 @@ export default function GroupSettingsModal({
   const [saving, setSaving] = useState(false);
   const [leaving, setLeaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [memberEmail, setMemberEmail] = useState('');
+  const [memberAction, setMemberAction] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const displayedEmojis =
@@ -131,6 +133,61 @@ export default function GroupSettingsModal({
       setError('Error deleting group');
     } finally {
       setDeleting(false);
+    }
+  };
+
+  const handleAddMember = async () => {
+    const email = memberEmail.trim().toLowerCase();
+    if (!email || !isCreator) return;
+
+    setMemberAction('add');
+    setError(null);
+    try {
+      const res = await fetch(`/api/split/groups/${groupId}/members`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.error ?? 'Failed to add member');
+        return;
+      }
+      setMemberEmail('');
+      onUpdated();
+    } catch {
+      setError('Error adding member');
+    } finally {
+      setMemberAction(null);
+    }
+  };
+
+  const handleRemoveMember = async (member: { userId: string; name: string; balance: number }) => {
+    if (!isCreator || member.userId === currentUserId) return;
+    if (Math.abs(member.balance) >= 0.01) {
+      setError(`Cannot remove ${member.name}: their balance is ${formatMoney(member.balance)}. Settle up first.`);
+      return;
+    }
+    if (!confirm(`Remove ${member.name} from this group?`)) return;
+
+    setMemberAction(member.userId);
+    setError(null);
+    try {
+      const res = await fetch(`/api/split/groups/${groupId}/members`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: member.userId }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.error ?? 'Failed to remove member');
+        return;
+      }
+      onUpdated();
+    } catch {
+      setError('Error removing member');
+    } finally {
+      setMemberAction(null);
     }
   };
 
@@ -315,35 +372,91 @@ export default function GroupSettingsModal({
             <label style={{ display: 'block', fontSize: '12px', fontWeight: 800, marginBottom: '6px' }}>
               Group members ({members.length})
             </label>
+
+            {isCreator && (
+              <div style={{ display: 'flex', gap: '8px', marginBottom: '10px' }}>
+                <input
+                  type="email"
+                  value={memberEmail}
+                  onChange={(e) => setMemberEmail(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      void handleAddMember();
+                    }
+                  }}
+                  placeholder="Member email"
+                  autoComplete="email"
+                  style={{ flex: 1, minWidth: 0 }}
+                />
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={memberAction !== null || !memberEmail.trim()}
+                  onClick={() => void handleAddMember()}
+                  style={{ whiteSpace: 'nowrap' }}
+                >
+                  {memberAction === 'add' ? 'Adding…' : 'Add'}
+                </button>
+              </div>
+            )}
+
             <div
               style={{
                 border: '1.5px solid var(--paper-dim)',
                 borderRadius: '2px',
-                maxHeight: '130px',
+                maxHeight: '180px',
                 overflowY: 'auto',
               }}
             >
-              {members.map((m) => (
-                <div
-                  key={m.userId}
-                  style={{
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    alignItems: 'center',
-                    padding: '8px 12px',
-                    borderBottom: '1px solid var(--paper-dim)',
-                    fontSize: '13px',
-                  }}
-                >
-                  <span style={{ fontWeight: 700 }}>
-                    {m.name} {m.userId === currentUserId && '(You)'}
-                  </span>
-                  <span className="tabular" style={{ fontWeight: 800 }}>
-                    {formatMoney(m.balance)}
-                  </span>
-                </div>
-              ))}
+              {members.map((m) => {
+                const canRemove = isCreator && m.userId !== currentUserId;
+                const isSettled = Math.abs(m.balance) < 0.01;
+                return (
+                  <div
+                    key={m.userId}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '10px',
+                      padding: '8px 12px',
+                      borderBottom: '1px solid var(--paper-dim)',
+                      fontSize: '13px',
+                    }}
+                  >
+                    <span style={{ fontWeight: 700, flex: 1, minWidth: 0 }}>
+                      {m.name} {m.userId === currentUserId && '(You)'}
+                    </span>
+                    <span className="tabular" style={{ fontWeight: 800, whiteSpace: 'nowrap' }}>
+                      {formatMoney(m.balance)}
+                    </span>
+                    {canRemove && (
+                      <button
+                        type="button"
+                        className="btn"
+                        disabled={memberAction !== null || !isSettled}
+                        onClick={() => void handleRemoveMember(m)}
+                        title={isSettled ? `Remove ${m.name}` : 'Settle this member’s balance before removing them'}
+                        style={{
+                          padding: '4px 8px',
+                          minHeight: 'auto',
+                          color: 'var(--red)',
+                          borderColor: 'var(--red)',
+                          fontSize: '11px',
+                        }}
+                      >
+                        {memberAction === m.userId ? 'Removing…' : 'Remove'}
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
             </div>
+            {isCreator && (
+              <p style={{ margin: '7px 0 0', color: 'var(--ink-soft)', fontSize: '11px', lineHeight: 1.4 }}>
+                Only the group creator can add or remove members. Members with an outstanding balance must settle up first.
+              </p>
+            )}
           </div>
 
           {/* Save Button */}
