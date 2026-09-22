@@ -790,15 +790,18 @@ a { color: inherit; text-decoration: none; }
   border: 2px solid var(--ink);
   background: var(--green);
   color: var(--white);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 28px;
-  font-weight: 400;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  line-height: 0;
   box-shadow: var(--shadow-md);
   cursor: pointer;
   text-decoration: none;
   transition: transform 0.08s ease, box-shadow 0.08s ease;
+}
+
+.fab-btn svg {
+  display: block;
 }
 
 .fab-btn:hover {
@@ -1396,3 +1399,85 @@ a { color: inherit; text-decoration: none; }
   margin-top: 2px;
 }
 
+
+
+/* Dashboard expense group picker */
+.modal-subtitle {
+  margin-top: 3px;
+  font-size: 12px;
+  color: var(--grey);
+  line-height: 1.4;
+}
+
+.expense-group-picker {
+  max-width: 440px;
+}
+
+.expense-group-list {
+  display: flex;
+  flex-direction: column;
+  padding: 12px;
+  gap: 10px;
+}
+
+.expense-group-option {
+  width: 100%;
+  border: 1.5px solid var(--ink);
+  background: var(--white);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  box-shadow: 2px 2px 0 var(--ink);
+  transition: transform 0.08s ease, box-shadow 0.08s ease, background 0.08s ease;
+}
+
+.expense-group-option:hover {
+  transform: translate(-1px, -1px);
+  box-shadow: var(--shadow-sm);
+  background: var(--paper);
+}
+
+.expense-group-option:active {
+  transform: translate(1px, 1px);
+  box-shadow: 1px 1px 0 var(--ink);
+}
+
+.expense-group-option-icon {
+  width: 40px;
+  height: 40px;
+  border: 1.5px solid var(--ink);
+  background: var(--paper-dim);
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  font-size: 18px;
+}
+
+.expense-group-option-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.expense-group-option-body strong {
+  font-size: 14px;
+  font-weight: 800;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.expense-group-option-body span {
+  font-size: 11.5px;
+  color: var(--grey);
+}
+
+.expense-group-option-arrow {
+  flex-shrink: 0;
+  font-size: 16px;
+  font-weight: 800;
+  color: var(--ink-soft);
+}
