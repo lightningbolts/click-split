@@ -33,6 +33,7 @@ export default function AddExpensePage() {
   const [taxInput, setTaxInput] = useState<string>('0');
   const [tipPreset, setTipPreset] = useState<number>(0);
   const [customTip, setCustomTip] = useState<string>('');
+  const [customPercentages, setCustomPercentages] = useState<Record<string, string>>({});
 
   const [scanning, setScanning] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -53,6 +54,18 @@ export default function AddExpensePage() {
             image: m.image,
           }));
           setMembers(mems);
+          setCustomPercentages((current) => {
+            if (mems.length === 0 || Object.keys(current).length > 0) return current;
+            const base = Math.floor((10000 / mems.length)) / 100;
+            let assigned = 0;
+            const next: Record<string, string> = {};
+            mems.forEach((member: Member, index: number) => {
+              const pct = index === mems.length - 1 ? Math.round((100 - assigned) * 100) / 100 : base;
+              next[member.userId] = pct.toFixed(2);
+              assigned += pct;
+            });
+            return next;
+          });
           if (mems.length > 0 && !paidBy) {
             const current = mems.find((m: Member) => m.userId === user.id);
             setPaidBy(current ? current.userId : mems[0].userId);
@@ -155,6 +168,17 @@ export default function AddExpensePage() {
       return;
     }
 
+    if (splitMethod === 'custom_percent') {
+      const totalPercent = members.reduce(
+        (sum, member) => sum + (parseFloat(customPercentages[member.userId] ?? '0') || 0),
+        0,
+      );
+      if (Math.abs(totalPercent - 100) > 0.01) {
+        setError(`Custom percentages must add up to 100% (currently ${totalPercent.toFixed(2)}%).`);
+        return;
+      }
+    }
+
     setSubmitting(true);
     setError(null);
 
@@ -192,6 +216,14 @@ export default function AddExpensePage() {
         source: scannedItems.length > 0 ? 'receipt_scan' : 'manual',
         receiptImageUrl: receiptImageUrl ?? undefined,
         items: finalItems.length > 0 ? finalItems : undefined,
+        customPercentages: splitMethod === 'custom_percent'
+          ? Object.fromEntries(
+              members.map((member) => [
+                member.userId,
+                parseFloat(customPercentages[member.userId] ?? '0') || 0,
+              ]),
+            )
+          : undefined,
       };
 
       const res = await fetch('/api/split/expenses', {
@@ -420,6 +452,41 @@ export default function AddExpensePage() {
               onChange={setSplitMethod}
               hasItems={hasItems}
             />
+
+            {splitMethod === 'custom_percent' && (
+              <div style={{ margin: '0 24px 20px', border: '2px solid var(--ink)', background: 'var(--paper-dim)' }}>
+                <div style={{ padding: '12px 14px', borderBottom: '1.5px solid var(--ink)', fontSize: '12px', fontWeight: 800 }}>
+                  Custom percentages
+                </div>
+                {members.map((member) => (
+                  <label
+                    key={member.userId}
+                    style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', padding: '10px 14px', borderBottom: '1px solid var(--paper)' }}
+                  >
+                    <span style={{ fontSize: '13px', fontWeight: 700 }}>{member.name}</span>
+                    <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      <input
+                        type="number"
+                        min="0"
+                        max="100"
+                        step="0.01"
+                        value={customPercentages[member.userId] ?? ''}
+                        onChange={(e) => setCustomPercentages((current) => ({ ...current, [member.userId]: e.target.value }))}
+                        style={{ width: '88px', padding: '8px', border: '1.5px solid var(--ink)', textAlign: 'right', fontWeight: 700 }}
+                        aria-label={`${member.name} percentage`}
+                      />
+                      <span style={{ fontWeight: 800 }}>%</span>
+                    </span>
+                  </label>
+                ))}
+                <div style={{ padding: '10px 14px', display: 'flex', justifyContent: 'space-between', fontSize: '12px', fontWeight: 800 }}>
+                  <span>Total</span>
+                  <span>
+                    {members.reduce((sum, member) => sum + (parseFloat(customPercentages[member.userId] ?? '0') || 0), 0).toFixed(2)}%
+                  </span>
+                </div>
+              </div>
+            )}
 
             {error && (
               <div style={{ margin: '0 20px 14px', color: 'var(--red)', fontSize: '13px' }}>
