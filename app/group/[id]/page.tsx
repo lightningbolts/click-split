@@ -58,7 +58,7 @@ export default function GroupDetailPage() {
 
   const fetchGroup = useCallback(async () => {
     try {
-      const res = await fetch(`/api/split/groups/${groupId}`);
+      const res = await fetch(`/api/split/groups/${groupId}`, { cache: 'no-store' });
       if (res.ok) {
         setData(await res.json());
       }
@@ -99,6 +99,21 @@ export default function GroupDetailPage() {
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'split_group_members', filter: `group_id=eq.${groupId}` },
+        () => { void fetchGroup(); },
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'split_expense_items' },
+        () => { void fetchGroup(); },
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'split_expense_shares' },
+        () => { void fetchGroup(); },
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'split_groups', filter: `id=eq.${groupId}` },
         () => { void fetchGroup(); },
       )
       .subscribe();
@@ -349,7 +364,38 @@ export default function GroupDetailPage() {
                       fontSize: '13.5px',
                     }}
                   >
-                    <span>{m.userId === user?.id ? `${m.name} (You)` : m.name}</span>
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', minWidth: 0 }}>
+                      <span
+                        aria-hidden="true"
+                        style={{
+                          width: '28px',
+                          height: '28px',
+                          borderRadius: '50%',
+                          overflow: 'hidden',
+                          border: '1.5px solid var(--ink)',
+                          background: 'var(--paper-dim)',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          flex: '0 0 auto',
+                          fontSize: '11px',
+                          fontWeight: 800,
+                        }}
+                      >
+                        {m.image ? (
+                          <img
+                            src={m.image}
+                            alt=""
+                            style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                          />
+                        ) : (
+                          m.name.trim().slice(0, 1).toUpperCase()
+                        )}
+                      </span>
+                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {m.userId === user?.id ? `${m.name} (You)` : m.name}
+                      </span>
+                    </span>
                     <span
                       className="tabular"
                       style={{
