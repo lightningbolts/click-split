@@ -287,10 +287,9 @@ export async function POST(request: NextRequest) {
               {
                 role: 'user',
                 content: [
-                  ...normalizedImages.map(({ dataUrl }, index) => ({
+                  ...normalizedImages.map(({ dataUrl }) => ({
                     type: 'image_url',
                     image_url: { url: dataUrl },
-                    ...(normalizedImages.length > 1 ? { image_index: index + 1 } : {}),
                   })),
                   {
                     type: 'text',
