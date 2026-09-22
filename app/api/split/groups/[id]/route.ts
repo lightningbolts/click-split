@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { createSupabaseServerClient } from '@/lib/supabase/server';
+import { createSupabaseServerClient, createSupabaseServiceRoleClient } from '@/lib/supabase/server';
 
 interface MemberRow {
   user_id: string;
@@ -9,6 +9,8 @@ interface MemberRow {
 interface UserRow {
   id: string;
   name: string | null;
+  full_name?: string | null;
+  email?: string | null;
   image: string | null;
 }
 
@@ -31,6 +33,7 @@ interface ShareRow {
 /**
  * GET /api/split/groups/[id]
  * Returns group detail: info, members, expenses, and balances.
+ * If user is not yet a member, returns isMember: false with basic preview so they can join.
  */
 export async function GET(
   _request: Request,
@@ -43,34 +46,53 @@ export async function GET(
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  // Get group
-  const { data: group, error: grpError } = await supabase
+  // First try fetching with authenticated user client
+  let { data: group } = await supabase
     .from('split_groups')
     .select('id, name, icon, created_at, created_by')
     .eq('id', id)
-    .single();
+    .maybeSingle();
 
-  if (grpError || !group) {
+  // If not visible under user RLS (e.g. invited non-member), try service role for preview
+  if (!group) {
+    const serviceRole = createSupabaseServiceRoleClient();
+    const { data: previewGroup } = await serviceRole
+      .from('split_groups')
+      .select('id, name, icon, created_at, created_by')
+      .eq('id', id)
+      .maybeSingle();
+    group = previewGroup;
+  }
+
+  if (!group) {
     return NextResponse.json({ error: 'Group not found' }, { status: 404 });
   }
 
   // Get members with user details
-  const { data: members } = await supabase
+  const serviceRole = createSupabaseServiceRoleClient();
+  const { data: members } = await serviceRole
     .from('split_group_members')
     .select('user_id, joined_at')
     .eq('group_id', id);
 
   const memberIds = (members as MemberRow[] ?? []).map((m) => m.user_id);
 
-  // Verify current user is a member
+  // If current user is not a member, return invite preview
   if (!memberIds.includes(user.id)) {
-    return NextResponse.json({ error: 'Not a member' }, { status: 403 });
+    return NextResponse.json({
+      group: { id: group.id, name: group.name, icon: group.icon, created_at: group.created_at },
+      isMember: false,
+      memberCount: memberIds.length,
+      members: [],
+      expenses: [],
+      userBalance: 0,
+    });
   }
 
   // Get user details for members
-  const { data: usersData } = await supabase
+  const { data: usersData } = await serviceRole
     .from('users')
-    .select('id, name, image')
+    .select('id, name, full_name, email, image')
     .in('id', memberIds);
 
   const users = (usersData ?? []) as UserRow[];
@@ -95,8 +117,17 @@ export async function GET(
     shares = (sharesData ?? []) as ShareRow[];
   }
 
-  // Build user map
-  const userMap = new Map(users.map((u) => [u.id, u]));
+  // Build user map with clean name fallback
+  const userMap = new Map(
+    users.map((u) => [
+      u.id,
+      {
+        id: u.id,
+        name: u.name || u.full_name || (u.email ? u.email.split('@')[0] : 'Member'),
+        image: u.image ?? null,
+      },
+    ]),
+  );
 
   // Enrich expenses with user's share
   const enrichedExpenses = expenses.map((expense) => {
@@ -104,14 +135,11 @@ export async function GET(
     const userShare = expenseShares.find((s) => s.user_id === user.id);
     const payer = userMap.get(expense.paid_by);
 
-    // Calculate what this expense means for the current user
     let userNet = 0;
     if (expense.paid_by === user.id) {
-      // User paid: they're owed the total minus their own share
       const theirShare = userShare ? Number(userShare.share_amount) : 0;
       userNet = Number(expense.total_amount) - theirShare;
     } else {
-      // Someone else paid: user owes their share
       userNet = userShare ? -Number(userShare.share_amount) : 0;
     }
 
@@ -135,18 +163,18 @@ export async function GET(
       const memberUser = userMap.get(memberId);
       return {
         userId: memberId,
-        name: memberUser?.name ?? 'Unknown',
+        name: memberUser?.name ?? 'Member',
         image: memberUser?.image ?? null,
         balance: Number(balance ?? 0),
       };
     }),
   );
 
-  // Calculate what each member owes/is owed relative to the current user
   const userBalance = memberBalances.find((m) => m.userId === user.id)?.balance ?? 0;
 
   return NextResponse.json({
     group,
+    isMember: true,
     members: memberBalances,
     expenses: enrichedExpenses,
     userBalance,

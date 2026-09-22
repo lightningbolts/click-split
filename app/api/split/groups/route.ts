@@ -50,11 +50,14 @@ export async function GET() {
   const memberUserIds = [...new Set((allMembers ?? []).map((m: { user_id: string }) => m.user_id))];
   const { data: users } = await supabase
     .from('users')
-    .select('id, name')
+    .select('id, name, full_name, email')
     .in('id', memberUserIds);
 
   const userNameMap = new Map(
-    (users ?? []).map((u: { id: string; name: string | null }) => [u.id, u.name ?? 'Unknown']),
+    (users ?? []).map((u: { id: string; name: string | null; full_name?: string | null; email?: string | null }) => [
+      u.id,
+      u.name || u.full_name || (u.email ? u.email.split('@')[0] : 'Unknown'),
+    ]),
   );
 
   // Calculate balance for each group via RPC
@@ -123,6 +126,7 @@ export async function POST(request: NextRequest) {
     .insert({ group_id: group.id, user_id: user.id });
 
   if (memberError) {
+    await supabase.from('split_groups').delete().eq('id', group.id);
     return NextResponse.json({ error: memberError.message }, { status: 500 });
   }
 

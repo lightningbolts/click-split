@@ -14,27 +14,39 @@ export async function POST(request: NextRequest) {
   }
 
   const body = await request.json();
-  const { groupId, toUser, amount, method } = body as {
+  const { groupId, fromUser, toUser, amount, method } = body as {
     groupId: string;
+    fromUser?: string;
     toUser: string;
     amount: number;
     method: string;
   };
 
-  if (!groupId || !toUser || !amount || amount <= 0) {
+  const actualFrom = fromUser || user.id;
+  const actualTo = toUser;
+
+  if (!groupId || !actualFrom || !actualTo || !amount || amount <= 0) {
     return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
   }
 
-  // Verify user is a group member
-  const { data: membership } = await supabase
+  if (actualFrom === actualTo) {
+    return NextResponse.json({ error: 'Cannot settle with yourself' }, { status: 400 });
+  }
+
+  // The authenticated user must be either the payer or the recipient
+  if (user.id !== actualFrom && user.id !== actualTo) {
+    return NextResponse.json({ error: 'You must be a party to this settlement' }, { status: 403 });
+  }
+
+  // Verify both users are group members
+  const { data: members } = await supabase
     .from('split_group_members')
     .select('user_id')
     .eq('group_id', groupId)
-    .eq('user_id', user.id)
-    .maybeSingle();
+    .in('user_id', [actualFrom, actualTo]);
 
-  if (!membership) {
-    return NextResponse.json({ error: 'Not a member of this group' }, { status: 403 });
+  if (!members || members.length < 2) {
+    return NextResponse.json({ error: 'Both users must be members of this group' }, { status: 400 });
   }
 
   // Create settlement
@@ -42,8 +54,8 @@ export async function POST(request: NextRequest) {
     .from('split_settlements')
     .insert({
       group_id: groupId,
-      from_user: user.id,
-      to_user: toUser,
+      from_user: actualFrom,
+      to_user: actualTo,
       amount,
       method: method ?? 'cash',
     })

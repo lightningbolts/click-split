@@ -91,7 +91,7 @@ $$;
 DO $$ BEGIN
   DROP POLICY IF EXISTS split_groups_select ON public.split_groups;
   CREATE POLICY split_groups_select ON public.split_groups FOR SELECT
-    USING (public.is_split_group_member(id));
+    USING (public.is_split_group_member(id) OR created_by = auth.uid());
 EXCEPTION WHEN undefined_object THEN NULL;
 END $$;
 
@@ -102,11 +102,25 @@ DO $$ BEGIN
 EXCEPTION WHEN undefined_object THEN NULL;
 END $$;
 
+DO $$ BEGIN
+  DROP POLICY IF EXISTS split_groups_update ON public.split_groups;
+  CREATE POLICY split_groups_update ON public.split_groups FOR UPDATE
+    USING (public.is_split_group_member(id) OR created_by = auth.uid());
+EXCEPTION WHEN undefined_object THEN NULL;
+END $$;
+
+DO $$ BEGIN
+  DROP POLICY IF EXISTS split_groups_delete ON public.split_groups;
+  CREATE POLICY split_groups_delete ON public.split_groups FOR DELETE
+    USING (created_by = auth.uid());
+EXCEPTION WHEN undefined_object THEN NULL;
+END $$;
+
 -- split_group_members: viewable by fellow members, joinable by invite
 DO $$ BEGIN
   DROP POLICY IF EXISTS split_group_members_select ON public.split_group_members;
   CREATE POLICY split_group_members_select ON public.split_group_members FOR SELECT
-    USING (public.is_split_group_member(group_id));
+    USING (user_id = auth.uid() OR public.is_split_group_member(group_id));
 EXCEPTION WHEN undefined_object THEN NULL;
 END $$;
 
@@ -114,6 +128,13 @@ DO $$ BEGIN
   DROP POLICY IF EXISTS split_group_members_insert ON public.split_group_members;
   CREATE POLICY split_group_members_insert ON public.split_group_members FOR INSERT
     WITH CHECK (public.is_split_group_member(group_id) OR user_id = auth.uid());
+EXCEPTION WHEN undefined_object THEN NULL;
+END $$;
+
+DO $$ BEGIN
+  DROP POLICY IF EXISTS split_group_members_delete ON public.split_group_members;
+  CREATE POLICY split_group_members_delete ON public.split_group_members FOR DELETE
+    USING (user_id = auth.uid() OR public.is_split_group_member(group_id));
 EXCEPTION WHEN undefined_object THEN NULL;
 END $$;
 
@@ -129,6 +150,20 @@ DO $$ BEGIN
   DROP POLICY IF EXISTS split_expenses_insert ON public.split_expenses;
   CREATE POLICY split_expenses_insert ON public.split_expenses FOR INSERT
     WITH CHECK (public.is_split_group_member(group_id));
+EXCEPTION WHEN undefined_object THEN NULL;
+END $$;
+
+DO $$ BEGIN
+  DROP POLICY IF EXISTS split_expenses_update ON public.split_expenses;
+  CREATE POLICY split_expenses_update ON public.split_expenses FOR UPDATE
+    USING (public.is_split_group_member(group_id));
+EXCEPTION WHEN undefined_object THEN NULL;
+END $$;
+
+DO $$ BEGIN
+  DROP POLICY IF EXISTS split_expenses_delete ON public.split_expenses;
+  CREATE POLICY split_expenses_delete ON public.split_expenses FOR DELETE
+    USING (public.is_split_group_member(group_id));
 EXCEPTION WHEN undefined_object THEN NULL;
 END $$;
 
@@ -174,7 +209,7 @@ DO $$ BEGIN
 EXCEPTION WHEN undefined_object THEN NULL;
 END $$;
 
--- split_settlements: group members only
+-- split_settlements: group members only, either party can record
 DO $$ BEGIN
   DROP POLICY IF EXISTS split_settlements_select ON public.split_settlements;
   CREATE POLICY split_settlements_select ON public.split_settlements FOR SELECT
@@ -185,7 +220,7 @@ END $$;
 DO $$ BEGIN
   DROP POLICY IF EXISTS split_settlements_insert ON public.split_settlements;
   CREATE POLICY split_settlements_insert ON public.split_settlements FOR INSERT
-    WITH CHECK (public.is_split_group_member(group_id) AND from_user = auth.uid());
+    WITH CHECK (public.is_split_group_member(group_id) AND (from_user = auth.uid() OR to_user = auth.uid()));
 EXCEPTION WHEN undefined_object THEN NULL;
 END $$;
 
@@ -221,16 +256,16 @@ AS $$
         AND se.paid_by != p_user_id
         AND ses.user_id = p_user_id
     )
-    -
+    +
     (
-      -- Settlements this user has already paid out
+      -- Settlements this user has already paid out (reduces what they owe)
       SELECT COALESCE(SUM(amount), 0)
       FROM public.split_settlements
       WHERE group_id = p_group_id AND from_user = p_user_id
     )
-    +
+    -
     (
-      -- Settlements this user has received
+      -- Settlements this user has received (reduces what is owed to them)
       SELECT COALESCE(SUM(amount), 0)
       FROM public.split_settlements
       WHERE group_id = p_group_id AND to_user = p_user_id

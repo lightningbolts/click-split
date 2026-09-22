@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import { useAuth } from '@/lib/AuthContext';
@@ -32,6 +32,8 @@ interface Expense {
 
 interface GroupDetail {
   group: { id: string; name: string; icon: string | null };
+  isMember?: boolean;
+  memberCount?: number;
   members: Member[];
   expenses: Expense[];
   userBalance: number;
@@ -56,6 +58,22 @@ export default function GroupDetailPage() {
   const { user, loading: authLoading } = useAuth();
   const [data, setData] = useState<GroupDetail | null>(null);
   const [loading, setLoading] = useState(true);
+  const [copied, setCopied] = useState(false);
+  const [joining, setJoining] = useState(false);
+  const [joinError, setJoinError] = useState<string | null>(null);
+
+  const fetchGroup = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/split/groups/${groupId}`);
+      if (res.ok) {
+        setData(await res.json());
+      }
+    } catch (err) {
+      console.error('Failed to fetch group:', err);
+    } finally {
+      setLoading(false);
+    }
+  }, [groupId]);
 
   useEffect(() => {
     if (authLoading) return;
@@ -64,21 +82,35 @@ export default function GroupDetailPage() {
       return;
     }
 
-    const fetchGroup = async () => {
-      try {
-        const res = await fetch(`/api/split/groups/${groupId}`);
-        if (res.ok) {
-          setData(await res.json());
-        }
-      } catch (err) {
-        console.error('Failed to fetch group:', err);
-      } finally {
-        setLoading(false);
-      }
-    };
-
     void fetchGroup();
-  }, [groupId, user, authLoading]);
+  }, [user, authLoading, fetchGroup]);
+
+  const handleCopyLink = () => {
+    if (typeof window !== 'undefined') {
+      void navigator.clipboard.writeText(window.location.href);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
+  };
+
+  const handleJoin = async () => {
+    setJoining(true);
+    setJoinError(null);
+    try {
+      const res = await fetch(`/api/split/groups/${groupId}/join`, {
+        method: 'POST',
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || 'Failed to join group');
+      }
+      await fetchGroup();
+    } catch (err) {
+      setJoinError(err instanceof Error ? err.message : 'Failed to join');
+    } finally {
+      setJoining(false);
+    }
+  };
 
   if (authLoading || loading) {
     return (
@@ -98,7 +130,50 @@ export default function GroupDetailPage() {
     );
   }
 
-  const { group, members, expenses, userBalance } = data;
+  const { group, isMember, members, expenses, userBalance } = data;
+
+  // Invite acceptance screen if user is not a member yet
+  if (isMember === false) {
+    return (
+      <div style={{ width: '100%', minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
+        <Topbar />
+        <main className="form-container" style={{ flex: 1 }}>
+          <div className="form-card" style={{ textAlign: 'center', padding: '36px 24px' }}>
+            <div style={{ fontSize: '48px', marginBottom: '12px' }}>
+              {group.icon ?? '👥'}
+            </div>
+            <h1 style={{ fontSize: '24px', fontWeight: 800, marginBottom: '8px' }}>
+              Join {group.name}
+            </h1>
+            <p style={{ color: 'var(--ink-soft)', fontSize: '14px', lineHeight: 1.6, marginBottom: '24px' }}>
+              You have been invited to join this group. Become a member to split expenses, track balances, and settle up easily.
+            </p>
+
+            {joinError && (
+              <p style={{ color: 'var(--red)', fontSize: '13px', marginBottom: '16px' }}>
+                {joinError}
+              </p>
+            )}
+
+            <button
+              className="btn btn-primary btn-block"
+              onClick={handleJoin}
+              disabled={joining}
+              style={{ fontSize: '15px', padding: '14px' }}
+            >
+              {joining ? 'Joining group…' : 'Join group'}
+            </button>
+
+            <div style={{ marginTop: '16px' }}>
+              <Link href="/dashboard" style={{ fontSize: '13px', color: 'var(--grey)', textDecoration: 'underline' }}>
+                Back to dashboard
+              </Link>
+            </div>
+          </div>
+        </main>
+      </div>
+    );
+  }
 
   const memberNames = members
     .map((m) => (m.userId === user?.id ? 'You' : m.name))
@@ -154,6 +229,14 @@ export default function GroupDetailPage() {
               <Link href={`/group/${groupId}/settle`} className="btn btn-ghost btn-block">
                 Settle up
               </Link>
+              <button
+                type="button"
+                onClick={handleCopyLink}
+                className="btn btn-ghost btn-block"
+                style={{ fontSize: '13px' }}
+              >
+                {copied ? '✓ Invite link copied' : '🔗 Copy invite link'}
+              </button>
             </div>
 
             <div>

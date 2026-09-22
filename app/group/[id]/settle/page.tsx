@@ -93,6 +93,7 @@ export default function SettleUpPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           groupId,
+          fromUser,
           toUser,
           amount,
           method,
@@ -101,6 +102,9 @@ export default function SettleUpPage() {
 
       if (res.ok) {
         setSettled(true);
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        console.error('Settlement error:', errData);
       }
     } catch (err) {
       console.error('Settlement error:', err);
