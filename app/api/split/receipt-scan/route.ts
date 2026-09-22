@@ -12,7 +12,8 @@ Given an image of a receipt, extract:
    - "label": Clean, human-readable item name (remove barcode numbers/SKUs).
    - "price": The final amount paid for this item (as a number). If both regular price and discounted/member price appear, use the final discounted price paid.
 4. "tax": Sales tax amount as a number if itemized, otherwise 0.
-5. "detected_total": The final total / balance charged to the customer.
+5. "tip": Tip or gratuity amount as a number if itemized, otherwise 0.
+6. "detected_total": The final total / balance charged to the customer.
 
 Return ONLY a valid JSON object matching this structure:
 {
@@ -22,12 +23,13 @@ Return ONLY a valid JSON object matching this structure:
     { "label": "Item name", "price": 4.99 }
   ],
   "tax": 0.03,
+  "tip": 0.00,
   "detected_total": 42.50
 }
 
 Rules:
 - Include every distinct purchased line item.
-- Do not include subtotal, total, or payment lines as items.
+- Do not include subtotal, total, tax, tip, or payment lines as items.
 - Prices must be positive decimal numbers.
 - Return ONLY the JSON object.`;
 
@@ -39,7 +41,8 @@ Given raw OCR text lines from a receipt, extract:
    - "label": Clean, human-readable item name without barcodes or trailing item codes.
    - "price": The final amount paid for this item (as a number). If both regular price and discounted/member price appear, use the final discounted price paid.
 4. "tax": Sales tax amount as a number if itemized, otherwise 0.
-5. "detected_total": The final total / balance charged to the customer.
+5. "tip": Tip or gratuity amount as a number if itemized, otherwise 0.
+6. "detected_total": The final total / balance charged to the customer.
 
 Return ONLY a valid JSON object matching this structure:
 {
@@ -49,6 +52,7 @@ Return ONLY a valid JSON object matching this structure:
     { "label": "Item name", "price": 4.99 }
   ],
   "tax": 0.03,
+  "tip": 0.00,
   "detected_total": 42.50
 }
 
@@ -295,6 +299,7 @@ export async function POST(request: NextRequest) {
       merchant?: string;
       date?: string;
       tax?: number;
+      tip?: number;
       items: Array<{ label: string; price: number }>;
       detected_total: number;
     };
@@ -307,6 +312,7 @@ export async function POST(request: NextRequest) {
       merchant: parsed.merchant ? String(parsed.merchant).trim() : undefined,
       date: parsed.date ? String(parsed.date).trim() : undefined,
       tax: typeof parsed.tax === 'number' ? parsed.tax : 0,
+      tip: typeof parsed.tip === 'number' ? parsed.tip : 0,
       items: parsed.items.map((item) => ({
         label: String(item.label).trim(),
         price: Number(item.price),
