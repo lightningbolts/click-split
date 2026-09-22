@@ -216,7 +216,7 @@ export async function POST(request: NextRequest) {
   // ─────────────────────────────────────────────────────────────
   if (!content && receiptImages.length > 0) {
     const normalizedImages = receiptImages.map((value) => {
-      const match = value.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.*)$/s);
+      const match = value.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,([\s\S]*)$/);
       return {
         mimeType: match?.[1] ?? 'image/jpeg',
         rawBase64: match?.[2] ?? value,
