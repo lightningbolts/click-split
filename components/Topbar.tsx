@@ -8,7 +8,28 @@ export default function Topbar() {
   const { user, displayName, profileImageUrl, signOut } = useAuth();
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [imgError, setImgError] = useState(false);
+  const [theme, setTheme] = useState<'light' | 'dark'>('light');
   const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem('click_split_theme');
+      if (stored === 'dark' || (!stored && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+        setTheme('dark');
+      } else {
+        setTheme('light');
+      }
+    } catch (e) {}
+  }, []);
+
+  const toggleTheme = () => {
+    const nextTheme = theme === 'light' ? 'dark' : 'light';
+    setTheme(nextTheme);
+    try {
+      localStorage.setItem('click_split_theme', nextTheme);
+      document.documentElement.setAttribute('data-theme', nextTheme);
+    } catch (e) {}
+  };
 
   const avatarSrc =
     profileImageUrl ||
@@ -58,8 +79,35 @@ export default function Topbar() {
           <span className="mark" />
           Click Split
         </Link>
-        {user ? (
-          <div className="profile-menu-container" ref={menuRef}>
+        <div className="topbar-actions">
+          <button
+            type="button"
+            className="theme-toggle-btn"
+            onClick={toggleTheme}
+            aria-label={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`}
+            title={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`}
+          >
+            {theme === 'dark' ? (
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="12" r="4" />
+                <path d="M12 2v2" />
+                <path d="M12 20v2" />
+                <path d="m4.93 4.93 1.41 1.41" />
+                <path d="m17.66 17.66 1.41 1.41" />
+                <path d="M2 12h2" />
+                <path d="M20 12h2" />
+                <path d="m6.34 17.66-1.41 1.41" />
+                <path d="m19.07 4.93-1.41 1.41" />
+              </svg>
+            ) : (
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z" />
+              </svg>
+            )}
+          </button>
+
+          {user ? (
+            <div className="profile-menu-container" ref={menuRef}>
             <button
               className="avatar"
               onClick={() => setDropdownOpen((prev) => !prev)}
@@ -156,6 +204,37 @@ export default function Topbar() {
                     New Group
                   </Link>
 
+                  <button
+                    type="button"
+                    className="dropdown-item"
+                    role="menuitem"
+                    onClick={toggleTheme}
+                  >
+                    {theme === 'dark' ? (
+                      <>
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <circle cx="12" cy="12" r="4" />
+                          <path d="M12 2v2" />
+                          <path d="M12 20v2" />
+                          <path d="m4.93 4.93 1.41 1.41" />
+                          <path d="m17.66 17.66 1.41 1.41" />
+                          <path d="M2 12h2" />
+                          <path d="M20 12h2" />
+                          <path d="m6.34 17.66-1.41 1.41" />
+                          <path d="m19.07 4.93-1.41 1.41" />
+                        </svg>
+                        Light Mode
+                      </>
+                    ) : (
+                      <>
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z" />
+                        </svg>
+                        Dark Mode
+                      </>
+                    )}
+                  </button>
+
                   <div className="dropdown-divider" />
 
                   <button
@@ -192,6 +271,7 @@ export default function Topbar() {
             Sign in
           </Link>
         )}
+        </div>
       </div>
     </header>
   );

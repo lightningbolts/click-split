@@ -29,8 +29,25 @@ Rules:
  */
 export async function POST(request: NextRequest) {
   const supabase = await createSupabaseServerClient();
-  const { data: { user }, error: authError } = await supabase.auth.getUser();
-  if (authError || !user) {
+  const authHeader = request.headers.get('Authorization');
+  const bearerToken = authHeader?.replace(/^Bearer\s+/i, '').trim();
+
+  let user = null;
+  if (bearerToken) {
+    const { data, error } = await supabase.auth.getUser(bearerToken);
+    if (!error && data?.user) {
+      user = data.user;
+    }
+  }
+
+  if (!user) {
+    const { data, error } = await supabase.auth.getUser();
+    if (!error && data?.user) {
+      user = data.user;
+    }
+  }
+
+  if (!user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
