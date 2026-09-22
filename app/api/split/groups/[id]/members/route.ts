@@ -50,7 +50,7 @@ export async function POST(
   const { data: target, error: userError } = await serviceRole
     .from('users')
     .select('id, name, full_name, email, image')
-    .ilike('email', email)
+    .eq('email', email)
     .maybeSingle();
 
   if (userError) {
