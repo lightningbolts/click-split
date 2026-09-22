@@ -39,3 +39,28 @@ export function groupByDate<T>(
     .filter((label) => buckets.has(label))
     .map((label) => [label, buckets.get(label)!]);
 }
+
+/**
+ * Formats a date into a short relative timestamp (e.g. 'Just now', '2h ago', '3d ago', 'May 12').
+ */
+export function formatRelativeTime(input: Date | string): string {
+  const date = typeof input === 'string' ? new Date(input) : input;
+  if (isNaN(date.getTime())) return '';
+
+  const now = new Date();
+  const diffMs = now.getTime() - date.getTime();
+  const diffSec = Math.floor(diffMs / 1000);
+  const diffMin = Math.floor(diffSec / 60);
+  const diffHours = Math.floor(diffMin / 60);
+  const diffDays = Math.floor(diffHours / 24);
+
+  if (diffSec < 60) return 'just now';
+  if (diffMin < 60) return `${diffMin}m ago`;
+  if (diffHours < 24) return `${diffHours}h ago`;
+  if (diffDays === 1) return 'yesterday';
+  if (diffDays < 7) return `${diffDays}d ago`;
+  if (diffDays < 30) return `${Math.floor(diffDays / 7)}w ago`;
+
+  return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+

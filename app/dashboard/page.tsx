@@ -17,6 +17,13 @@ interface GroupData {
   members: string[];
   memberCount: number;
   expenseCount: number;
+  totalSpend?: number;
+  latestExpense?: {
+    description: string;
+    amount: number;
+    payer: string;
+    createdAt: string;
+  } | null;
 }
 
 export default function DashboardPage() {
@@ -146,7 +153,11 @@ export default function DashboardPage() {
                 id={group.id}
                 name={group.name}
                 icon={group.icon ?? '👥'}
-                memberSummary={`${group.members.join(', ')} · ${group.expenseCount} expense${group.expenseCount !== 1 ? 's' : ''}`}
+                members={group.members}
+                memberCount={group.memberCount}
+                expenseCount={group.expenseCount}
+                totalSpend={group.totalSpend ?? 0}
+                latestExpense={group.latestExpense}
                 balance={group.balance}
               />
             ))}

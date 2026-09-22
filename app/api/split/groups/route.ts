@@ -60,6 +60,13 @@ export async function GET() {
     ]),
   );
 
+  // Get all expenses for these groups in a single batched query
+  const { data: allExpenses } = await supabase
+    .from('split_expenses')
+    .select('id, group_id, description, total_amount, paid_by, created_at')
+    .in('group_id', groupIds)
+    .order('created_at', { ascending: false });
+
   // Calculate balance for each group via RPC
   const groupsWithBalance = await Promise.all(
     (groups ?? []).map(async (group: { id: string; name: string; icon: string | null; created_at: string }) => {
@@ -72,18 +79,33 @@ export async function GET() {
         .filter((m: { group_id: string; user_id: string }) => m.group_id === group.id)
         .map((m: { group_id: string; user_id: string }) => userNameMap.get(m.user_id) ?? 'Unknown');
 
-      // Get expense count
-      const { count } = await supabase
-        .from('split_expenses')
-        .select('id', { count: 'exact', head: true })
-        .eq('group_id', group.id);
+      const groupExpenses = (allExpenses ?? []).filter(
+        (e: { group_id: string }) => e.group_id === group.id
+      );
+
+      const totalSpend = groupExpenses.reduce(
+        (sum: number, e: { total_amount: number | string }) => sum + Number(e.total_amount || 0),
+        0
+      );
+
+      const latest = groupExpenses[0];
+      const latestExpense = latest
+        ? {
+            description: latest.description,
+            amount: Number(latest.total_amount || 0),
+            payer: userNameMap.get(latest.paid_by) ?? 'Someone',
+            createdAt: latest.created_at,
+          }
+        : null;
 
       return {
         ...group,
         balance: Number(balance ?? 0),
         members: groupMembers,
         memberCount: groupMembers.length,
-        expenseCount: count ?? 0,
+        expenseCount: groupExpenses.length,
+        totalSpend,
+        latestExpense,
       };
     }),
   );
