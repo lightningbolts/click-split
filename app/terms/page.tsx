@@ -58,7 +58,7 @@ export default function TermsPage() {
             <section>
               <h2 style={{ fontSize: '18px', fontWeight: 800, marginBottom: '12px' }}>4. Contact</h2>
               <p style={{ lineHeight: 1.6, color: 'var(--ink-soft)' }}>
-                Questions regarding these Terms should be directed to <a href="mailto:support@joinclick.co" style={{ color: 'var(--green)', textDecoration: 'underline' }}>support@joinclick.co</a>.
+                Questions regarding these Terms should be directed to <a href="mailto:click.us.platforms@gmail.com" style={{ color: 'var(--green)', textDecoration: 'underline' }}>click.us.platforms@gmail.com</a>.
               </p>
             </section>
           </article>

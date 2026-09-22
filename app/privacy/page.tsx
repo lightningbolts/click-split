@@ -74,7 +74,7 @@ export default function PrivacyPolicyPage() {
             <section style={{ marginBottom: '28px' }}>
               <h2 style={{ fontSize: '18px', fontWeight: 800, marginBottom: '12px' }}>5. Account Deletion & Data Rights</h2>
               <p style={{ lineHeight: 1.6, color: 'var(--ink-soft)' }}>
-                You have the right to request deletion of your account and associated expense records at any time. You can request account deletion directly within the app under Profile, or by emailing <a href="mailto:support@joinclick.co" style={{ color: 'var(--green)', textDecoration: 'underline' }}>support@joinclick.co</a>.
+                You have the right to request deletion of your account and associated expense records at any time. You can request account deletion directly within the app under Profile, or by emailing <a href="mailto:click.us.platforms@gmail.com" style={{ color: 'var(--green)', textDecoration: 'underline' }}>click.us.platforms@gmail.com</a>.
               </p>
             </section>
 
@@ -85,7 +85,7 @@ export default function PrivacyPolicyPage() {
               </p>
               <p style={{ marginTop: '8px', color: 'var(--ink)' }}>
                 <strong>Click Platforms Support</strong><br />
-                Email: <a href="mailto:support@joinclick.co" style={{ color: 'var(--green)', textDecoration: 'underline' }}>support@joinclick.co</a><br />
+                Email: <a href="mailto:click.us.platforms@gmail.com" style={{ color: 'var(--green)', textDecoration: 'underline' }}>click.us.platforms@gmail.com</a><br />
                 Website: <a href="https://joinclick.co" style={{ color: 'var(--green)', textDecoration: 'underline' }}>joinclick.co</a>
               </p>
             </section>

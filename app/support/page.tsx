@@ -43,8 +43,8 @@ export default function SupportPage() {
               </p>
               <div style={{ fontSize: '16px', fontWeight: 800 }}>
                 Email:{' '}
-                <a href="mailto:support@joinclick.co" style={{ color: 'var(--green)', textDecoration: 'underline' }}>
-                  support@joinclick.co
+                <a href="mailto:click.us.platforms@gmail.com" style={{ color: 'var(--green)', textDecoration: 'underline' }}>
+                  click.us.platforms@gmail.com
                 </a>
               </div>
               <p style={{ fontSize: '13px', color: 'var(--grey)', marginTop: '6px' }}>
@@ -79,7 +79,7 @@ export default function SupportPage() {
               <div>
                 <h3 style={{ fontSize: '16px', fontWeight: 800, marginBottom: '6px' }}>How do I delete my account?</h3>
                 <p style={{ lineHeight: 1.6, color: 'var(--ink-soft)' }}>
-                  You can delete your account and associated data by emailing <a href="mailto:support@joinclick.co" style={{ color: 'var(--green)', textDecoration: 'underline' }}>support@joinclick.co</a> with the subject line &quot;Delete Account&quot;. All personal identifying data will be permanently wiped.
+                  You can delete your account and associated data by emailing <a href="mailto:click.us.platforms@gmail.com" style={{ color: 'var(--green)', textDecoration: 'underline' }}>click.us.platforms@gmail.com</a> with the subject line &quot;Delete Account&quot;. All personal identifying data will be permanently wiped.
                 </p>
               </div>
             </section>
