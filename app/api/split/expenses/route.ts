@@ -27,7 +27,7 @@ interface MemberRow {
 
 /**
  * POST /api/split/expenses
- * Creates an expense, writes items (if any), and computes shares.
+ * Creates an expense, writes items (if any), and computes shares atomically.
  */
 export async function POST(request: NextRequest) {
   const supabase = await createSupabaseServerClient();
@@ -39,7 +39,7 @@ export async function POST(request: NextRequest) {
   const body = (await request.json()) as CreateExpenseBody;
   const { groupId, description, totalAmount, paidBy, splitMethod, source, receiptImageUrl, items, customPercentages } = body;
 
-  // Validate
+  // Validate inputs
   if (!groupId || !description?.trim() || !Number.isFinite(totalAmount) || totalAmount <= 0 || !paidBy || !splitMethod) {
     return NextResponse.json({ error: 'Invalid or missing required fields' }, { status: 400 });
   }
@@ -65,7 +65,60 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Payer must be a member of the group' }, { status: 400 });
   }
 
-  // Create the expense
+  // Compute shares through one cent-safe implementation
+  let computedShares;
+  try {
+    computedShares = computeExpenseShares({
+      totalAmount,
+      memberIds,
+      splitMethod,
+      items: items?.map((item) => ({ price: item.price, assignedTo: item.assignedTo })) ?? [],
+      customPercentages,
+    });
+  } catch (error) {
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : 'Invalid split configuration' },
+      { status: 400 },
+    );
+  }
+
+  const itemRows = (items ?? []).map((item) => ({
+    label: item.label,
+    price: item.price,
+    assigned_to: item.assignedTo,
+  }));
+
+  const shareRows = computedShares.map((share) => ({
+    user_id: share.userId,
+    share_amount: share.amount,
+  }));
+
+  // 1. Attempt atomic PostgreSQL RPC execution
+  const { data: rpcExpenseId, error: rpcError } = await supabase.rpc(
+    'create_split_expense_transaction',
+    {
+      p_group_id: groupId,
+      p_description: description.trim(),
+      p_total_amount: totalAmount,
+      p_paid_by: paidBy,
+      p_split_method: splitMethod,
+      p_source: source ?? 'manual',
+      p_receipt_image_url: receiptImageUrl ?? null,
+      p_items: itemRows,
+      p_shares: shareRows,
+    },
+  );
+
+  if (!rpcError && rpcExpenseId) {
+    const formattedShares = computedShares.map((s) => ({
+      expense_id: rpcExpenseId,
+      user_id: s.userId,
+      share_amount: s.amount,
+    }));
+    return NextResponse.json({ expense: { id: rpcExpenseId }, shares: formattedShares }, { status: 201 });
+  }
+
+  // 2. Fallback to sequential inserts if RPC is not yet deployed
   const { data: expense, error: expError } = await supabase
     .from('split_expenses')
     .insert({
@@ -84,60 +137,31 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: expError?.message ?? 'Failed to create expense' }, { status: 500 });
   }
 
-  // Insert items if provided
-  if (items && items.length > 0) {
-    const itemRows = items.map((item) => ({
+  if (itemRows.length > 0) {
+    const itemsToInsert = itemRows.map((item) => ({
       expense_id: expense.id,
       label: item.label,
       price: item.price,
-      assigned_to: item.assignedTo,
+      assigned_to: item.assigned_to,
     }));
-
-    const { error: itemError } = await supabase
-      .from('split_expense_items')
-      .insert(itemRows);
-
+    const { error: itemError } = await supabase.from('split_expense_items').insert(itemsToInsert);
     if (itemError) {
-      console.error('Error inserting items:', itemError.message);
       await supabase.from('split_expenses').delete().eq('id', expense.id);
       return NextResponse.json({ error: 'Failed to save expense items' }, { status: 500 });
     }
   }
 
-  // Compute shares through one cent-safe implementation shared with updates.
-  let computedShares;
-  try {
-    computedShares = computeExpenseShares({
-      totalAmount,
-      memberIds,
-      splitMethod,
-      items: items?.map((item) => ({ price: item.price, assignedTo: item.assignedTo })) ?? [],
-      customPercentages,
-    });
-  } catch (error) {
-    // Avoid leaving a partially-created expense if share validation fails.
-    await supabase.from('split_expenses').delete().eq('id', expense.id);
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : 'Invalid split configuration' },
-      { status: 400 },
-    );
-  }
-
-  const shares = computedShares.map((share) => ({
+  const sharesToInsert = computedShares.map((share) => ({
     expense_id: expense.id,
     user_id: share.userId,
     share_amount: share.amount,
   }));
 
-  const { error: shareError } = await supabase
-    .from('split_expense_shares')
-    .insert(shares);
-
+  const { error: shareError } = await supabase.from('split_expense_shares').insert(sharesToInsert);
   if (shareError) {
-    console.error('Error inserting shares:', shareError.message);
     await supabase.from('split_expenses').delete().eq('id', expense.id);
     return NextResponse.json({ error: 'Failed to save expense shares' }, { status: 500 });
   }
 
-  return NextResponse.json({ expense: { id: expense.id }, shares }, { status: 201 });
+  return NextResponse.json({ expense: { id: expense.id }, shares: sharesToInsert }, { status: 201 });
 }
