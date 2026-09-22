@@ -24,6 +24,7 @@ export default function DashboardPage() {
   const [groups, setGroups] = useState<GroupData[]>([]);
   const [loading, setLoading] = useState(true);
   const [isJoinModalOpen, setIsJoinModalOpen] = useState(false);
+  const [isExpensePickerOpen, setIsExpensePickerOpen] = useState(false);
 
   useEffect(() => {
     if (authLoading) return;
@@ -64,9 +65,6 @@ export default function DashboardPage() {
   const owedToUser = groups.reduce((sum, g) => sum + Math.max(0, g.balance), 0);
   const userOwes = groups.reduce((sum, g) => sum + Math.abs(Math.min(0, g.balance)), 0);
   const netBalance = owedToUser - userOwes;
-
-  // Determine which group FAB should link to (most recent, or new group if none)
-  const fabHref = groups.length > 0 ? `/group/${groups[0].id}/add` : '/group/new';
 
   return (
     <div style={{ width: '100%', minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
@@ -155,7 +153,68 @@ export default function DashboardPage() {
           </div>
         )}
 
-        <FAB href={fabHref} />
+        <FAB
+          ariaLabel={groups.length > 0 ? 'Add expense' : 'Create group'}
+          onClick={() => {
+            if (groups.length === 0) {
+              window.location.href = '/group/new';
+              return;
+            }
+            setIsExpensePickerOpen(true);
+          }}
+        />
+
+        {isExpensePickerOpen && (
+          <div
+            className="modal-overlay"
+            role="presentation"
+            onClick={(event) => {
+              if (event.target === event.currentTarget) setIsExpensePickerOpen(false);
+            }}
+          >
+            <div
+              className="modal-card expense-group-picker"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="expense-group-picker-title"
+            >
+              <div className="modal-head">
+                <div>
+                  <h3 id="expense-group-picker-title">Add expense</h3>
+                  <p className="modal-subtitle">Choose which group this expense belongs to.</p>
+                </div>
+                <button
+                  type="button"
+                  className="modal-close-btn"
+                  onClick={() => setIsExpensePickerOpen(false)}
+                  aria-label="Close"
+                >
+                  ×
+                </button>
+              </div>
+
+              <div className="expense-group-list">
+                {groups.map((group) => (
+                  <Link
+                    key={group.id}
+                    href={`/group/${group.id}/add`}
+                    className="expense-group-option"
+                    onClick={() => setIsExpensePickerOpen(false)}
+                  >
+                    <span className="expense-group-option-icon">{group.icon ?? '👥'}</span>
+                    <span className="expense-group-option-body">
+                      <strong>{group.name}</strong>
+                      <span>
+                        {group.memberCount} member{group.memberCount !== 1 ? 's' : ''} · {group.expenseCount} expense{group.expenseCount !== 1 ? 's' : ''}
+                      </span>
+                    </span>
+                    <span className="expense-group-option-arrow" aria-hidden="true">→</span>
+                  </Link>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
 
         <JoinGroupModal
           isOpen={isJoinModalOpen}
