@@ -89,8 +89,28 @@ export const PAYMENT_RAILS: Record<PaymentMethod, PaymentRailConfig> = {
   },
 };
 
+function openCustomSchemeWithFallback(deepLink: string, fallbackURL: string): void {
+  let appSwitchDetected = false;
+
+  const onVisibilityChange = () => {
+    if (document.visibilityState === 'hidden') {
+      appSwitchDetected = true;
+    }
+  };
+
+  document.addEventListener('visibilitychange', onVisibilityChange);
+  window.location.href = deepLink;
+
+  window.setTimeout(() => {
+    document.removeEventListener('visibilitychange', onVisibilityChange);
+    if (!appSwitchDetected && document.visibilityState === 'visible') {
+      window.location.href = fallbackURL;
+    }
+  }, 1200);
+}
+
 /**
- * Dispatches a payment via deep link, web fallback, or W3C payment sheet.
+ * Dispatches a payment via deep link, recipient-specific web fallback, or W3C payment sheet.
  */
 export async function launchPaymentRail({
   method,
@@ -112,34 +132,33 @@ export async function launchPaymentRail({
   switch (method) {
     case 'venmo': {
       if (cleanHandle) {
-        // Native app deep link with web fallback
         const deepLink = `venmo://paycharge?txn=pay&recipients=${encodeURIComponent(cleanHandle)}&amount=${amtFormatted}&note=${encodeURIComponent(note)}`;
         const webFallback = `https://venmo.com/?txn=pay&recipients=${encodeURIComponent(cleanHandle)}&amount=${amtFormatted}&note=${encodeURIComponent(note)}`;
 
-        window.location.href = deepLink;
-        setTimeout(() => {
-          window.open(webFallback, '_blank');
-        }, 800);
+        // Only navigate to the browser fallback when the page never loses visibility.
+        // The old unconditional timeout opened Venmo's website even after a successful
+        // app switch, which made the handoff look broken.
+        openCustomSchemeWithFallback(deepLink, webFallback);
       } else {
-        window.open(`https://venmo.com/?txn=pay&amount=${amtFormatted}&note=${encodeURIComponent(note)}`, '_blank');
+        window.location.href = `https://venmo.com/?txn=pay&amount=${amtFormatted}&note=${encodeURIComponent(note)}`;
       }
       return { launched: true };
     }
 
     case 'paypal': {
       if (cleanHandle) {
-        window.open(`https://paypal.me/${encodeURIComponent(cleanHandle)}/${amtFormatted}`, '_blank');
+        window.location.href = `https://paypal.me/${encodeURIComponent(cleanHandle)}/${amtFormatted}`;
       } else {
-        window.open(`https://www.paypal.com/myaccount/transfer/homepage`, '_blank');
+        window.location.href = 'https://www.paypal.com/myaccount/transfer/homepage';
       }
       return { launched: true };
     }
 
     case 'cashapp': {
       if (cleanHandle) {
-        window.open(`https://cash.app/$${encodeURIComponent(cleanHandle)}/${amtFormatted}`, '_blank');
+        window.location.href = `https://cash.app/${encodeURIComponent(cleanHandle)}/${amtFormatted}`;
       } else {
-        window.open('https://cash.app', '_blank');
+        window.location.href = 'https://cash.app';
       }
       return { launched: true };
     }
