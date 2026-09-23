@@ -72,7 +72,8 @@ export default function GroupDetailPage() {
   useEffect(() => {
     if (authLoading) return;
     if (!user) {
-      window.location.href = '/signin';
+      const next = encodeURIComponent(`/group/${groupId}`);
+      window.location.href = `/signin?next=${next}`;
       return;
     }
 

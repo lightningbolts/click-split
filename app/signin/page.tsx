@@ -5,6 +5,13 @@ import { useRouter } from 'next/navigation';
 import { useState, useEffect } from 'react';
 import { getSupabaseClient } from '@/lib/supabase/client';
 
+function normalizeNextPath(candidate: string | null): string {
+  if (!candidate || !candidate.startsWith('/') || candidate.startsWith('//')) {
+    return '/dashboard';
+  }
+  return candidate;
+}
+
 /**
  * Sign-in page supporting Supabase Email/Password and OAuth (Google / Apple).
  */
@@ -19,10 +26,13 @@ export default function SignInPage() {
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [origin, setOrigin] = useState<string>('');
+  const [nextPath, setNextPath] = useState('/dashboard');
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
       setOrigin(window.location.origin);
+      const params = new URLSearchParams(window.location.search);
+      setNextPath(normalizeNextPath(params.get('next')));
     }
   }, []);
 
@@ -69,7 +79,7 @@ export default function SignInPage() {
         }
 
         if (data.session) {
-          router.push('/dashboard');
+          router.push(nextPath);
           router.refresh();
         }
       } else {
@@ -80,6 +90,7 @@ export default function SignInPage() {
             data: {
               full_name: fullName.trim(),
             },
+            emailRedirectTo: `${origin || window.location.origin}/api/auth/callback?next=${encodeURIComponent(nextPath)}`,
           },
         });
 
@@ -91,7 +102,7 @@ export default function SignInPage() {
 
         if (data.session) {
           // If session returned immediately (email confirmation disabled)
-          router.push('/dashboard');
+          router.push(nextPath);
           router.refresh();
         } else {
           setMessage('Account created! Please check your email to confirm your account, then sign in.');
@@ -122,7 +133,7 @@ export default function SignInPage() {
     const { data, error: oauthError } = await supabase.auth.signInWithOAuth({
       provider,
       options: {
-        redirectTo: `${currentOrigin}/api/auth/callback?next=/dashboard`,
+        redirectTo: `${currentOrigin}/api/auth/callback?next=${encodeURIComponent(nextPath)}`,
         scopes: provider === 'google' ? 'openid profile email' : 'name email',
       },
     });
