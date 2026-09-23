@@ -134,10 +134,18 @@ function JoinGroupForm() {
   }
 
   if (!user) {
+    const groupId = preview?.id || extractGroupId(input);
+    const joinPath = groupId
+      ? `/group/${groupId}`
+      : initialParam
+        ? `/group/join?link=${encodeURIComponent(initialParam)}`
+        : '/group/join';
+    const signInHref = `/signin?next=${encodeURIComponent(joinPath)}`;
+
     return (
       <div className="empty-state">
         <p>Please sign in to join a group.</p>
-        <Link href="/signin" className="btn btn-primary" style={{ marginTop: '16px', display: 'inline-flex' }}>
+        <Link href={signInHref} className="btn btn-primary" style={{ marginTop: '16px', display: 'inline-flex' }}>
           Sign in
         </Link>
       </div>
